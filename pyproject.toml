@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sigma-agent"
+version = "0.1.0"
+description = "分层路由与自进化记忆 Agent 框架"
+requires-python = ">=3.10"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sigma"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]
