@@ -173,24 +173,83 @@ class Orchestrator:
             return self._execute_concurrent(plan)
         return self._execute_sequential(plan)
 
+    def _are_dependencies_satisfied(
+        self, subtask: Subtask, completed: dict[str, WorkerResult]
+    ) -> bool:
+        """Check whether all dependencies of a subtask have completed successfully."""
+        for dep_id in subtask.depends_on:
+            if dep_id not in completed:
+                return False
+            if not completed[dep_id].success:
+                return False
+        return True
+
     def _execute_sequential(self, plan: Plan) -> list[WorkerResult]:
         results: list[WorkerResult] = []
+        completed: dict[str, WorkerResult] = {}
         for subtask in plan.subtasks:
+            if not self._are_dependencies_satisfied(subtask, completed):
+                # Dependency failed — mark as skipped
+                result = WorkerResult(
+                    subtask_id=subtask.id,
+                    success=False,
+                    error=f"Skipped: dependency not satisfied ({', '.join(subtask.depends_on)})",
+                )
+                results.append(result)
+                completed[subtask.id] = result
+                continue
             result = self.dispatch(subtask)
             results.append(result)
+            completed[subtask.id] = result
         return results
 
     def _execute_concurrent(self, plan: Plan) -> list[WorkerResult]:
-        """Execute independent subtasks concurrently (in-process)."""
-        from concurrent.futures import ThreadPoolExecutor
+        """Execute eligible subtasks concurrently, respecting dependency ordering."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        results: list[WorkerResult] = []
-        with ThreadPoolExecutor(max_workers=len(plan.subtasks)) as executor:
-            futures = {executor.submit(self.dispatch, s): s for s in plan.subtasks}
-            from concurrent.futures import as_completed
-            for future in as_completed(futures):
-                results.append(future.result())
-        return results
+        results: dict[str, WorkerResult] = {}
+        pending = {s.id: s for s in plan.subtasks}
+        completed: dict[str, WorkerResult] = {}
+
+        while pending:
+            # Collect subtasks whose dependencies are satisfied
+            eligible = [
+                s for s in pending.values()
+                if self._are_dependencies_satisfied(s, completed)
+            ]
+            if not eligible:
+                # Remaining subtasks have unfulfilled dependencies — mark as skipped
+                for s_id, s in pending.items():
+                    dep_failed = any(
+                        d in completed and not completed[d].success
+                        for d in s.depends_on
+                    )
+                    if dep_failed:
+                        results[s_id] = WorkerResult(
+                            subtask_id=s_id,
+                            success=False,
+                            error=f"Skipped: dependency failed ({', '.join(s.depends_on)})",
+                        )
+                    else:
+                        results[s_id] = WorkerResult(
+                            subtask_id=s_id,
+                            success=False,
+                            error=f"Blocked: dependencies not met ({', '.join(s.depends_on)})",
+                        )
+                break
+
+            with ThreadPoolExecutor(max_workers=len(eligible)) as executor:
+                future_map = {
+                    executor.submit(self.dispatch, s): s.id for s in eligible
+                }
+                for future in as_completed(future_map):
+                    s_id = future_map[future]
+                    result = future.result()
+                    results[s_id] = result
+                    completed[s_id] = result
+                    del pending[s_id]
+
+        return list(results.values())
 
     def evaluate(self, result: WorkerResult) -> Evaluation:
         """Evaluate a Worker's result — accept or request rework."""

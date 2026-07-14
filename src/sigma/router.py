@@ -14,10 +14,23 @@ class RouteResult:
 
 
 class Router:
-    """Two-stage Skill router: Stage 1 recall → Stage 2 scoring ranking."""
+    """Two-stage Skill router: Stage 1 recall → Stage 2 scoring ranking.
 
-    def __init__(self, registry: SkillRegistry):
+    The scoring weights are configurable via __init__ (defaults optimised
+    for intent-precision-heavy workloads).
+    """
+
+    def __init__(
+        self,
+        registry: SkillRegistry,
+        intent_weight: float = 0.5,
+        tag_weight: float = 0.3,
+        example_weight: float = 0.2,
+    ):
         self._registry = registry
+        self._intent_weight = intent_weight
+        self._tag_weight = tag_weight
+        self._example_weight = example_weight
 
     def route(
         self,
@@ -63,14 +76,10 @@ class Router:
         """Stage 2 scoring function — deterministic, no LLM call.
 
         Weighted combination:
-          - intent match confidence: 0.5 if exact match, 0.0 otherwise
+          - intent match confidence: self._intent_weight if exact match, 0.0 otherwise
           - tag overlap ratio: percentage of query tags present in skill tags
           - example similarity: keyword overlap between query_text and skill examples
         """
-        intent_weight = 0.5
-        tag_weight = 0.3
-        example_weight = 0.2
-
         # Intent match
         intent_score = 1.0 if candidate.intent_matched else 0.0
 
@@ -94,7 +103,7 @@ class Router:
         example_score = len(common) / len(query_words) if query_words else 0.0
 
         return (
-            intent_weight * intent_score
-            + tag_weight * tag_score
-            + example_weight * example_score
+            self._intent_weight * intent_score
+            + self._tag_weight * tag_score
+            + self._example_weight * example_score
         )
