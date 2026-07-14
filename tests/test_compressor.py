@@ -102,3 +102,10 @@ class TestCompressorPipeline:
         pipeline.signal_introspect()
         assert pipeline.should_trigger()
         assert not pipeline.should_trigger()
+
+    def test_reset_metrics_clears_counters(self):
+        pipeline = CompressorPipeline(token_threshold=100)
+        pipeline.update_metrics(token_count=200)
+        assert pipeline.should_trigger()
+        pipeline.reset_metrics()
+        assert not pipeline.should_trigger()

@@ -83,16 +83,23 @@ class Stage3OnDemandRetrieval:
 
 
 class Stage4Fallback:
-    """Prune to N most recent critical items when over hard limit."""
+    """Prune to N most recent critical items when over hard limit.
 
-    def __init__(self, max_items: int = 50):
+    Items matching any critical_keyword (case-insensitive) are preserved
+    before non-critical items during pruning.
+    """
+
+    def __init__(self, max_items: int = 50, critical_keywords: list[str] | None = None):
         self._max_items = max_items
+        self._critical_keywords = critical_keywords or ["critical", "error", "fail", "important"]
 
     def prune(self, items: list[Any]) -> list[Any]:
         if len(items) <= self._max_items:
             return items
-        # Keep items with "critical" in name, then most recent
-        critical = [i for i in items if isinstance(i, str) and "critical" in i.lower()]
+        critical = [
+            i for i in items
+            if isinstance(i, str) and any(k in i.lower() for k in self._critical_keywords)
+        ]
         rest = [i for i in items if i not in critical]
         keep = critical + rest[-(self._max_items - len(critical)):]
         return keep[:self._max_items]
@@ -125,6 +132,11 @@ class CompressorPipeline:
 
     def signal_introspect(self) -> None:
         self._introspect_flag = True
+
+    def reset_metrics(self) -> None:
+        """Reset accumulated token and turn counters after triggered compression."""
+        self._total_tokens = 0
+        self._total_turns = 0
 
     def should_trigger(self) -> bool:
         if self._introspect_flag:

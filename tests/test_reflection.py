@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 from sigma.executor import ExecutionResult
-from sigma.memory import EpisodicMemory, ProceduralMemory
+from sigma.memory import EpisodicMemory, FactualMemory, ProceduralMemory
 from sigma.reflection import ReflectionEngine
 from sigma.storage import SQLiteStorageBackend
 
@@ -127,6 +127,29 @@ class TestReflectionEngine:
             assert m.content
             assert m.key
             assert "code_review" in m.tags or "review" in m.tags
+
+    def test_success_extracts_factual_memory(self, engine):
+        """key=value patterns in outputs should produce FactualMemory records."""
+        result = ExecutionResult(
+            success=True,
+            outputs=["tool_a: generated key=abc123", "tool_b: deployed endpoint=staging.api.com"],
+        )
+        engine.reflect(result, intent_class="deployment", query_context="deploy")
+        facts = engine.storage.query(memory_type="factual", tags=[])
+        assert len(facts) >= 1
+        for m in facts:
+            assert isinstance(m, FactualMemory)
+            assert m.key.startswith("fact_")
+
+    def test_factual_not_created_without_patterns(self, engine):
+        """Outputs without key=value patterns should not create FactualMemory."""
+        result = ExecutionResult(
+            success=True,
+            outputs=["tool_a: operation completed successfully"],
+        )
+        engine.reflect(result, intent_class="testing", query_context="run test")
+        facts = engine.storage.query(memory_type="factual", tags=[])
+        assert len(facts) == 0
 
 
 class TestReflectionIntegration:

@@ -19,8 +19,19 @@ class Router:
     def __init__(self, registry: SkillRegistry):
         self._registry = registry
 
-    def route(self, intent_class: str = "", tags: list[str] | None = None) -> RouteResult:
-        """Full route cycle: recall candidates → score → select best."""
+    def route(
+        self,
+        intent_class: str = "",
+        tags: list[str] | None = None,
+        query_text: str = "",
+    ) -> RouteResult:
+        """Full route cycle: recall candidates → score → select best.
+
+        Args:
+            intent_class: Primary intent category from classification.
+            tags: Metadata tags from query extraction.
+            query_text: Raw user query text (used for example similarity scoring).
+        """
         tags = tags or []
         candidates = self._recall(intent_class, tags)
         if not candidates:
@@ -28,7 +39,7 @@ class Router:
 
         scores: dict[str, float] = {}
         for c in candidates:
-            scores[c.skill.id] = self._score(c, intent_class, tags)
+            scores[c.skill.id] = self._score(c, intent_class, tags, query_text)
 
         best_id = max(scores, key=scores.get)  # type: ignore
         best = next(c for c in candidates if c.skill.id == best_id)
@@ -42,13 +53,19 @@ class Router:
         """Stage 1: query registry for candidate Skills."""
         return self._registry.query(intent_class, tags)
 
-    def _score(self, candidate: QueryResult, intent_class: str, tags: list[str]) -> float:
+    def _score(
+        self,
+        candidate: QueryResult,
+        intent_class: str,
+        tags: list[str],
+        query_text: str = "",
+    ) -> float:
         """Stage 2 scoring function — deterministic, no LLM call.
 
         Weighted combination:
           - intent match confidence: 0.5 if exact match, 0.0 otherwise
           - tag overlap ratio: percentage of query tags present in skill tags
-          - example similarity: simple keyword overlap ratio
+          - example similarity: keyword overlap between query_text and skill examples
         """
         intent_weight = 0.5
         tag_weight = 0.3
@@ -58,17 +75,18 @@ class Router:
         intent_score = 1.0 if candidate.intent_matched else 0.0
 
         # Tag overlap
-        skill_tags = candidate.skill.metadata.get("tags", [])
         tag_score = (
             len(candidate.matched_tags) / len(tags)
             if tags and len(tags) > 0
             else 0.0
         )
 
-        # Example similarity — simple keyword overlap
+        # Example similarity — compare query_text (or intent_class as fallback)
+        # against Skill example text to measure real semantic keyword overlap
+        source_text = query_text or intent_class.replace("_", " ")
         query_words = set(
-            w.lower() for w in intent_class.split("_") + tags
-            if w.strip()
+            w.lower() for w in source_text.split()
+            if len(w) > 2  # skip very short words
         )
         example_text = " ".join(candidate.skill.examples).lower()
         example_words = set(example_text.split())

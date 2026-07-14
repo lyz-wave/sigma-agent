@@ -1,8 +1,9 @@
+import re
 import uuid
-from typing import Any
 
 from sigma.executor import ExecutionResult
-from sigma.memory import EpisodicMemory, ProceduralMemory
+
+from sigma.memory import EpisodicMemory, FactualMemory, ProceduralMemory
 from sigma.storage import StorageBackend
 
 
@@ -77,6 +78,31 @@ class ReflectionEngine:
             tags=tags,
         )
         self.storage.store(mem)
+
+        # Extract factual knowledge from outputs (key=value, key: value patterns)
+        self._extract_factual_memory(result, intent_class, tags)
+
+    def _extract_factual_memory(
+        self,
+        result: ExecutionResult,
+        intent_class: str,
+        tags: list[str],
+    ) -> None:
+        """Extract factual knowledge (key=value, key: value) from execution outputs."""
+        suffix = uuid.uuid4().hex[:6]
+        for output in result.outputs:
+            # Match patterns like: key=value, key=value, key is value
+            # Avoid matching tool_prefix: text at start of output
+            facts = re.findall(r'(?:^|[\s,;])([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*([a-zA-Z0-9_/.@-]+)', output)
+            for key, value in facts:
+                if len(key) > 2 and len(value) > 1:  # skip trivial matches
+                    fact = FactualMemory(
+                        key=f"fact_{key}_{suffix}",
+                        content=f"{key}={value}",
+                        source=f"execution:{intent_class}",
+                        tags=tags + [intent_class] if intent_class else tags,
+                    )
+                    self.storage.store(fact)
 
     def _reflect_failure(
         self,
