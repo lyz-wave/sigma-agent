@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 006 — ReflectionEngine：执行后反思</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+.path-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin: 1.4em 0; }
+.path-card { border-radius: 10px; padding: 20px 24px; }
+.path-card--ok { background: rgba(34, 197, 94, 0.06); border: 1px solid rgba(34, 197, 94, 0.2); }
+.path-card--fail { background: rgba(239, 68, 68, 0.06); border: 1px solid rgba(239, 68, 68, 0.2); }
+.path-card h3 { margin-top: 0; font-size: 1em; }
+.path-card--ok h3 { color: #22c55e; }
+.path-card--fail h3 { color: #ef4444; }
+.path-card pre { font-size: 0.78em; margin: 8px 0 0; background: rgba(0,0,0,0.2); }
+@media (max-width: 640px) { .path-grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<h1>ReflectionEngine：执行后反思</h1>
+<p class="meta">Lesson 006 · 阅读时间 6 分钟 · <a href="../lessons/0005-memory-system.html">← Memory System</a></p>
+
+<p>Router 选 Skill → Executor 执行 → 然后呢？然后 ReflectionEngine 开始工作。它是 Skill Executor 和 Memory System 之间的桥梁。</p>
+
+<h2>一句话概括</h2>
+
+<p>每次 Skill 执行完成后（无论成功失败），ReflectionEngine 自动：</p>
+
+<ul>
+  <li><strong>成功</strong>：提取执行步骤 → 存为程序性记忆（怎么做成的）</li>
+  <li><strong>成功</strong>：提取 key=value 知识 → 存为事实记忆（学到了什么）</li>
+  <li><strong>失败</strong>：记录错误上下文 → 存为情景记忆（当时环境是什么）</li>
+  <li><strong>失败</strong>：生成修复步骤 → 存为程序性记忆（下次怎么避免）</li>
+</ul>
+
+<p>而且可以一键关闭：<code>ReflectionEngine(storage, enabled=False)</code>。</p>
+
+<h2>双路径策略</h2>
+
+<div class="path-grid">
+  <div class="path-card path-card--ok">
+    <h3>✅ 成功路径</h3>
+    <p style="font-size:0.85em; color: var(--text-muted);">产出 ProceduralMemory + FactualMemory</p>
+    <pre><code>输入：ExecutionResult(success=True,
+  outputs=["check: reviewed syntax",
+           "report: generated report"])
+
+输出：
+→ ProceduralMemory
+  key="proc_code_review_a1b2c3"
+  steps=["check: reviewed syntax",
+         "report: generated report"]
+  tags=["code_review", "review"]
+
+→ FactualMemory
+  key="fact_branch_fe1234"   ← 从输出中提取
+  content="branch=main"
+  source="execution:code_review"
+  tags=["code_review"]</code></pre>
+  </div>
+  <div class="path-card path-card--fail">
+    <h3>❌ 失败路径</h3>
+    <p style="font-size:0.85em; color: var(--text-muted);">产出 EpisodicMemory + ProceduralMemory</p>
+    <pre><code>输入：ExecutionResult(success=False,
+  outputs=["config: loaded"],
+  error="Connection refused")
+
+输出：
+→ EpisodicMemory
+  key="epi_deploy_b2c3d4"
+  context={"error": "Connection refused",
+           "completed_steps": 1}
+  outcome="failure"
+  tags=["deployment", "failure"]
+
+→ ProceduralMemory (修复指南)
+  key="proc_deploy_fix_c3d4e5"
+  steps=[
+    "1. Review the error details",
+    "2. Check the failing step config",
+    "3. Fix and retry (deployment)",
+  ]
+  tags=["deployment", "fix"]</code></pre>
+  </div>
+</div>
+
+<h2>代码流程</h2>
+
+<pre><code>def reflect(self, result, intent_class, query_context):
+    if not self._enabled:
+        return                  # ← 可以一键关闭
+
+    if result.success:
+        self._reflect_success(...)
+    else:
+        self._reflect_failure(...)</code></pre>
+
+<p>两个分支各自做三件事：</p>
+<ol>
+  <li><strong>解析执行结果</strong> — 从 outputs 中提取结构化信息</li>
+  <li><strong>构造记忆对象</strong> — 选择合适的记忆类型和字段</li>
+  <li><strong>写入存储</strong> — <code>self.storage.store(mem)</code></li>
+</ol>
+
+<h2>FactualMemory 提取细节</h2>
+
+<p>成功路径中，<code>_extract_factual_memory()</code> 扫描每个输出：</p>
+
+<pre><code>输出："generated key=abc123 endpoint=api.example.com"
+                         ↓ 正则匹配
+正则：([a-zA-Z_]\w*)\s*=\s*([a-zA-Z0-9_/.@-]+)
+                         ↓ 提取结果
+facts = [("key", "abc123"), ("endpoint", "api.example.com")]
+                         ↓ 逐条存储
+→ FactualMemory(key="fact_key_f4ce03", content="key=abc123")
+→ FactualMemory(key="fact_endpoint_f4ce03", content="endpoint=api.example.com")</code></pre>
+
+<p>这样，Agent 执行一次后就知道 <code>endpoint=api.example.com</code> 了——下次需要时可以直接从记忆系统查询，而不需要再执行一次。</p>
+
+<h2>可配置性</h2>
+
+<p>当前硬编码的标签推断逻辑：</p>
+
+<pre><code>if "deploy" in query_context.lower(): tags.append("deployment")
+if "test" in query_context.lower(): tags.append("testing")
+if "review" in query_context.lower(): tags.append("review")</code></pre>
+
+<p>这在实际使用时应该替换为更灵活的映射，但核心模式不变：<strong>成功→程序性+事实记忆，失败→情景+修复步骤</strong>。</p>
+
+<div class="key-insight">
+<p><strong>要记住的一句话</strong>：ReflectionEngine 让"吃一堑长一智"在 Agent 身上成为现实——不是通过修改代码，而是通过自动提炼经验存入记忆系统。成功和失败都被视为学习机会，只是学习的内容不同。</p>
+</div>
+
+<hr>
+<p><strong>源码</strong>：<a href="../src/sigma/reflection.py">reflection.py</a></p>
+</body>
+</html>

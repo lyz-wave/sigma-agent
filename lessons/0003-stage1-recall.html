@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 003 — Stage 1 召回：意图分类 + 标签匹配</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+.flow-h {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 1.6em 0;
+  flex-wrap: wrap;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+.flow-h .box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 20px;
+  text-align: center;
+  min-width: 100px;
+}
+.flow-h .box.highlight { border-color: var(--accent-dim); }
+.flow-h .arrow { color: var(--text-dim); }
+
+.code-compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin: 1.2em 0;
+}
+.code-compare > div {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  font-family: var(--font-mono);
+  font-size: 0.82em;
+  line-height: 1.8;
+}
+.code-compare .label {
+  font-family: var(--font-body);
+  font-size: 0.8em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 8px;
+}
+@media (max-width: 640px) { .code-compare { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<h1>Stage 1 召回：意图分类 + 标签匹配</h1>
+<p class="meta">Lesson 003 · 阅读时间 8 分钟 · <a href="../lessons/0001-sigma-agent-overview.html">Lesson 001</a> → <a href="../lessons/0002-router-scoring-function.html">002</a></p>
+
+<p>整个路由流程是：</p>
+
+<div class="flow-h">
+  <div class="box highlight">用户输入</div>
+  <span class="arrow">→</span>
+  <div class="box">意图分类</div>
+  <span class="arrow">→</span>
+  <div class="box">标签提取</div>
+  <span class="arrow">→</span>
+  <div class="box">Registry.query()</div>
+  <span class="arrow">→</span>
+  <div class="box">候选 Skill 集合</div>
+</div>
+
+<p>目前项目中，<strong>前面两步（意图分类 + 标签提取）还没有实现</strong>，Router 直接接收已经提取好的 <code>intent_class</code> 和 <code>tags</code>。我来解释每步的设计意图和实现思路。</p>
+
+<h2>两层过滤的逻辑</h2>
+
+<p>Stage 1 的核心目标是：<strong>快速排除不相关的 Skill</strong>，缩小 Stage 2 精排需要处理的候选集。它有两个过滤层，一宽一窄：</p>
+
+<h3>第一层：意图分类</h3>
+<p>将用户的自然语言查询映射到预定义的意图类别。这是最粗的过滤——如果你的 Skill Catalog 有 50 个 Skill，可能有 10 个意图类别。意图分类的一步就能排除 80% 的不相关 Skill。</p>
+
+<blockquote>
+<strong>如何实现？</strong> 这里应该用一个小 LLM 调用或关键词分类器。<br><br>
+<strong>关键点</strong>：Stage 1 是<em>唯一</em>适合调 LLM 的路由环节——因为它一次调用就能排除大量候选，后续的 Stage 2（打分函数）和整个执行流程都不再需要 LLM。这笔 Token 花得值。
+</blockquote>
+
+<p>一个简单的实现思路：</p>
+
+<pre><code>INTENT_KEYWORDS = {
+    "code_review": ["review", "pr", "code quality", "lint", "check style"],
+    "testing":     ["test", "unit test", "integration test", "pytest"],
+    "deployment":  ["deploy", "release", "push", "rollback"],
+    "refactoring": ["refactor", "restructure", "clean up", "technical debt"],
+}
+
+def classify_intent(query: str) -> str:
+    q = query.lower()
+    scores = {}
+    for intent, keywords in INTENT_KEYWORDS.items():
+        scores[intent] = sum(1 for kw in keywords if kw in q)
+    return max(scores, key=scores.get) if max(scores.values()) > 0 else "unknown"</code></pre>
+
+<h3>第二层：标签匹配</h3>
+<p>进一步的细化过滤。从用户查询中提取技术标签（如 "python"、"docker"、"api"），与 Skill 注册时声明的标签列表做交集匹配。</p>
+
+<p>标签的设计目的是捕捉<strong>意图之外的上下文</strong>——同样是 "deploy"，"deploy 到 kubernetes" 和 "deploy 到 serverless" 的标签截然不同。</p>
+
+<pre><code>def extract_tags(query: str, known_tags: set[str]) -> list[str]:
+    q_words = set(query.lower().split())
+    return [t for t in known_tags if t in q_words]</code></pre>
+
+<h2>当前代码的工作方式</h2>
+
+<p>框架当前的 <code>Router.route()</code> 接口：</p>
+
+<pre><code>def route(
+    self,
+    intent_class: str = "",      # ← 外部已分类好传入
+    tags: list[str] | None = None,  # ← 外部已提取好传入
+    query_text: str = "",
+) -> RouteResult:</code></pre>
+
+<p>调用方需要自己先把用户输入转成 <code>intent_class</code> 和 <code>tags</code>，然后调用 <code>router.route()</code>。</p>
+
+<p>测试中的用法就是一个典型例子：</p>
+
+<pre><code># 测试中直接传入提取好的参数
+route_result = router.route(
+    intent_class="code_review",   # 测试手动指定
+    tags=[],                      # 测试手动指定
+)</code></pre>
+
+<p>然后 <code>_recall()</code> 委托给 <code>registry.query()</code>：</p>
+
+<div class="code-compare">
+<div>
+<div class="label">intent_class = "testing"</div>
+# 精确匹配 intent_class<br>
+for skill in self._skills:<br>
+&nbsp;&nbsp;if skill.intent_class == "testing":<br>
+&nbsp;&nbsp;&nbsp;&nbsp;results.append(skill)
+</div>
+<div>
+<div class="label">tags = ["python", "api"]</div>
+# 任意标签重叠即匹配<br>
+for skill in self._skills:<br>
+&nbsp;&nbsp;for t in ["python", "api"]:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;if t in skill.tags:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;results.append(skill)
+</div>
+</div>
+
+<h2>两条召回路径</h2>
+
+<p>看 <code>registry.query()</code> 的源码，它实际有两条路径：</p>
+
+<table class="compare-table">
+  <tr><th>路径</th><th>条件</th><th>召回逻辑</th></tr>
+  <tr>
+    <td><strong>意图路径</strong></td>
+    <td><code>intent_class</code> 不为空</td>
+    <td>只召回 intent_class 精确匹配的 Skill<br><code>skill.metadata.intent_class == intent_class</code></td>
+  </tr>
+  <tr>
+    <td><strong>标签路径</strong></td>
+    <td><code>intent_class</code> 为空<br>但 <code>tags</code> 不为空</td>
+    <td>召回任意标签重叠的 Skill<br><code>any(t in skill.tags for t in tags)</code></td>
+  </tr>
+</table>
+
+<p>设计意图：</p>
+<ul>
+  <li><strong>意图路径</strong>：确定性高，只返回精确匹配的 Skill，候选项精而少</li>
+  <li><strong>标签路径</strong>：兜底策略——当意图分类不确定时（如用户输入太短或模糊），退而求其次用标签做更宽泛的匹配</li>
+</ul>
+
+<h2>完整流程串起来</h2>
+
+<pre><code>用户输入：  "review this PR and check for style issues"
+            ↓
+意图分类：  intent_class = "code_review"    ← 关键词 "review" 匹配
+标签提取：  tags = ["python", "style"]      ← 假设已知标签库含这些
+            ↓
+Registry.query(intent_class="code_review", tags=["python", "style"])
+            ↓
+召回结果：  [code-review]                   ← 只有一个 Skill 匹配
+            ↓
+Stage 2 精排看 Lesson 002                     ← 对候选打分排序</code></pre>
+
+<h2>为什么框架没实现这部分？</h2>
+
+<p>因为<strong>意图分类的实现方式高度依赖于使用场景</strong>：</p>
+<ul>
+  <li>如果你在 Claude Code 中使用，可以用 <code>/skill</code> 或关键词路由</li>
+  <li>如果你的系统自己有 NLP pipeline，可以直接用 embedding 分类</li>
+  <li>如果只是为了快速演示，一个关键词字典就够用了</li>
+</ul>
+
+<p>框架把这部分作为接口暴露（传入 <code>intent_class</code> + <code>tags</code>），让使用者根据自己场景选择最合适的实现，而不是硬编码一种分类方式。</p>
+
+<div class="key-insight">
+<p><strong>要记住的一句话</strong>：Stage 1 的召回是"快滤"不是"精排"——它的目标是用最小的成本排除明显不相关的 Skill，把最难的选择留给 Stage 2 的打分函数。快滤可以粗一点，但必须快。</p>
+</div>
+
+<hr style="border: none; border-top: 1px solid var(--border); margin: 3em 0;">
+
+<p><strong>参考资源</strong>：</p>
+<ul>
+  <li><a href="../src/sigma/registry.py">registry.py</a> — query() 召回逻辑</li>
+  <li><a href="../src/sigma/router.py">router.py</a> — Router 两阶段入口</li>
+  <li><a href="../lessons/0002-router-scoring-function.html">Lesson 002</a> — Stage 2 精排打分函数</li>
+</ul>
+
+<p>有什么不清楚的随时问！</p>
+
+</body>
+</html>

@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 001 — Sigma Agent 全貌</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+
+<h1>Sigma Agent 全貌</h1>
+<p class="meta">Lesson 001 · 阅读时间 10 分钟 · 对应 <a href="../MISSION.md">Mission</a></p>
+
+<p>Sigma Agent 是一个 AI Coding Agent 框架，核心思路是：<strong>以 Query Loop + Tool Use 构建任务执行闭环</strong>。它解决的是真实世界中 Agent 框架的三个核心问题：</p>
+
+<ol>
+  <li><strong>检索噪声与功能重叠</strong> — Tool 多了以后 Agent 选不对、选不准</li>
+  <li><strong>经验无法跨会话复用</strong> — 每次启动从零开始，同样的错反复犯</li>
+  <li><strong>长会话上下文退化</strong> — 跑久了关键信息被稀释，推理准确率下降</li>
+</ol>
+
+<blockquote>
+💡 讲解要点：这是项目的"电梯演讲"。用这三句话能让听众在 10 秒内理解项目价值。
+</blockquote>
+
+<h2>系统架构</h2>
+
+<p>框架由 <strong>6 个模块</strong>构成，按执行顺序串联：</p>
+
+<div class="diagram">
+<span class="hl">用户输入</span><br>
+↓<br>
+<span class="hl-cyan">Router</span> — 两阶段（召回 + 精排）→ 选出最佳 Skill<br>
+<span class="arrow">└─ Stage 1:</span> 意图分类 + 标签匹配<br>
+<span class="arrow">└─ Stage 2:</span> 打分函数（<strong>无 LLM 调用</strong>）<br>
+↓<br>
+<span class="hl-cyan">Skill Executor</span> — 执行 Tool 编排序列<br>
+<span class="arrow">└─</span> 参数传递 + 错误传播 + 失败跳过后续步骤<br>
+↓<br>
+<span class="hl-cyan">ReflectionEngine</span> — 反思执行结果<br>
+<span class="arrow">└─</span> 成功 → 提取 ProceduralMemory<br>
+<span class="arrow">└─</span> 失败 → EpisodicMemory + 修复步骤<br>
+↓<br>
+<span class="hl-cyan">Memory System</span> — 分类存储 · 索引更新 · 按需复用<br>
+↓<br>
+<span class="hl-cyan">Context Compressor</span> — 四阶段逐级压缩（OR 触发）<br>
+↓<br>
+<span class="hl">输出 / 下一轮迭代</span>
+</div>
+
+<h2>四大技术支柱</h2>
+
+<h3>1. Skill 分层路由</h3>
+
+<p><strong>解决的问题</strong>：Tool 数量从 10 个增长到 100 个后，Agent 无法准确选择合适的能力单元。</p>
+
+<p><strong>方案</strong>：三层组织结构 + 两阶段路由。</p>
+
+<pre><code>Tool (原子操作) → Skill (多 Tool 编排) → Skill Catalog (注册中心)</code></pre>
+
+<p>路由过程：</p>
+<ul>
+  <li><strong>Stage 1 — 召回</strong>：基于意图分类 + 元信息标签匹配，从 Catalog 中筛选候选 Skill 集合</li>
+  <li><strong>Stage 2 — 精排</strong>：用打分函数（加权组合：意图匹配 0.5 + 标签重叠 0.3 + 示例相似度 0.2）从候选中选最优</li>
+</ul>
+
+<blockquote>
+<strong>关键设计决策</strong>：精排用打分函数而非 LLM。<br>
+原因：精排阶段如果调 LLM 做选择，路由本身的 Token 成本就抵消了它意图解决的问题。打分函数是纯数学运算，确定性强、成本可预测。
+</blockquote>
+
+<h3>2. 自进化记忆沉淀</h3>
+
+<p><strong>解决的问题</strong>：Agent 每次启动从零开始，同样的错误无法避免。</p>
+
+<p><strong>方案</strong>：执行后自动反思，提炼经验存入三种记忆类型。</p>
+
+<table>
+  <tr><th>类型</th><th>内容</th><th>来源</th></tr>
+  <tr><td><strong>FactualMemory</strong></td><td>API 参数、key=value 配置等静态知识</td><td>成功执行中自动提取</td></tr>
+  <tr><td><strong>ProceduralMemory</strong></td><td>How-to 步骤、正确模式</td><td>成功执行 → 提取步骤</td></tr>
+  <tr><td><strong>EpisodicMemory</strong></td><td>失败归因 + 上下文</td><td>失败执行 → 错误 + 环境</td></tr>
+</table>
+
+<p>生命周期闭环：<code>执行 → 反思 → 提炼 → 分类存储 → 索引更新 → 按需复用</code></p>
+
+<p>双路径策略：成功时提取正样本（程序性经验），失败时提取负样本（错误归因 + 修复步骤），确保两种经验都有沉淀。</p>
+
+<h3>3. 分层上下文压缩</h3>
+
+<p><strong>解决的问题</strong>：长会话中关键上下文被稀释，Agent 推理准确率衰减。</p>
+
+<p><strong>方案</strong>：四阶段逐级执行 pipeline。</p>
+
+<pre><code>摘要预览 → 占位替换 → 按需检索 → 超限兜底</code></pre>
+
+<ul>
+  <li><strong>Stage 1</strong>：将大工具输出压缩为结构化摘要</li>
+  <li><strong>Stage 2</strong>：用缓存友好型占位符替换大内容块</li>
+  <li><strong>Stage 3</strong>：需要时从占位符恢复完整内容</li>
+  <li><strong>Stage 4</strong>：超出硬限制时裁剪，保留最近 N 条关键项</li>
+</ul>
+
+<p>触发条件（OR）：Agent 自省 / 轮数阈值 / Token 阈值。</p>
+
+<h3>4. 中心化多 Agent 协作</h3>
+
+<p><strong>解决的问题</strong>：复杂任务需要分解并行执行，但 Agent 间协调基础设施过于复杂。</p>
+
+<p><strong>方案</strong>：主 Agent 统一规划审批，子 Agent 以 Tool Call 方式受控执行。</p>
+
+<pre><code>主 Agent 制定计划
+  ↓ (Tool Call 调度)
+子 Agent 接收到目标
+  ↓ (自规划执行)
+子 Agent 调用 Tool → 执行步骤
+  ↓ (返回结果)
+主 Agent 评估、审批、下一步决策</code></pre>
+
+<p>子 Agent 约束：</p>
+<ul>
+  <li>全量 Tool 访问权限</li>
+  <li>用完即销毁（无状态跨步骤复用）</li>
+  <li>只读记忆（可查询经验，不可写入）</li>
+  <li>支持 Fork（进程内并行）和 Worktree（隔离工作区）模式</li>
+</ul>
+
+<blockquote>
+<strong>关键设计决策</strong>：避免引入复杂的 Agent 间协调基础设施。<br>
+所有协调通过主 Agent 完成，没有子 Agent 之间的直接通信。这大幅降低了系统复杂度，代价是主 Agent 成为瓶颈——但对于框架类项目，这种折衷是可接受的。
+</blockquote>
+
+<h2>代码结构</h2>
+
+<pre><code>sigma-agent/
+├── src/sigma/
+│   ├── skill.py          # Skill, ToolRef, ExecutionStep, QueryResult
+│   ├── registry.py       # SkillRegistry: register/discover/query
+│   ├── router.py         # Router: Stage 1 recall → Stage 2 scoring
+│   ├── executor.py       # SkillExecutor: Tool orchestration
+│   ├── memory.py         # FactualMemory / ProceduralMemory / EpisodicMemory
+│   ├── storage.py        # StorageBackend ABC + SQLite 实现
+│   ├── reflection.py     # ReflectionEngine: 成功/失败双路径
+│   ├── compressor.py     # 4-stage 压缩 pipeline
+│   └── orchestrator.py   # 主 Agent + Worker + ForkMode
+├── tests/                # 81 个测试
+└── site/                 # 演示页面</code></pre>
+
+<h2>讲解话术建议</h2>
+
+<div class="qa">
+<strong>Q: 这个项目和其他 Agent 框架有什么区别？</strong><br>
+大多数框架止步于 Tool Calling 层面——给你一堆工具让 Agent 自己选。Sigma Agent 加了组织层次（Skill）、经验沉淀（Memory）、上下文管理（Compressor）和协作模式（Orchestrator），让 Agent 在长期运行中越用越聪明，而不是越用越乱。
+</div>
+
+<div class="qa">
+<strong>Q: 为什么叫 Sigma？</strong><br>
+Σ 是数学求和符号，代表"汇聚"——将多个工具汇聚为 Skill，将多次经验汇聚为记忆，将多个 Agent 汇聚为协作。
+</div>
+
+<div class="qa">
+<strong>Q: 生产可用吗？</strong><br>
+MVP 阶段——核心架构完整，81 个测试通过。路由、记忆、压缩、协作四个闭环都已实现。下一步可以加 CLI 入口、真实 Skill 示例和 PyPI 发布。
+</div>
+
+<hr style="border: none; border-top: 1px solid var(--border); margin: 3em 0;">
+
+<p><strong>推荐资源</strong>：</p>
+<ul>
+  <li><a href="https://github.com/lyz-wave/sigma-agent">GitHub 仓库</a> — 完整的源码和 Issue 列表</li>
+  <li><a href="../site/index.html">演示页面</a> — 可视化展示框架能力</li>
+  <li><a href="../CONTEXT.md">领域模型</a> — 核心术语和设计决策文档</li>
+  <li><a href="../.scratch/spec-skill-agent-framework.md">Spec</a> — 项目规格说明书</li>
+</ul>
+
+<p>如有任何不清楚的地方，随时提问！</p>
+
+</body>
+</html>

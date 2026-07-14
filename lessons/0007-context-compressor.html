@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 007 — Context Compressor：分层上下文压缩</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+.stage-flow { display: flex; flex-direction: column; gap: 4px; margin: 1.4em 0; font-family: var(--font-mono); font-size: 0.82em; }
+.sf-row { display: flex; align-items: stretch; gap: 12px; }
+.sf-num { display: flex; align-items: center; justify-content: center; width: 32px; min-width: 32px; height: 32px; border-radius: 50%; background: var(--accent); color: #000; font-weight: 700; font-size: 0.85em; }
+.sf-body { flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; }
+.sf-body .name { font-weight: 600; color: var(--text-primary); }
+.sf-body .desc { color: var(--text-muted); font-size: 0.9em; margin-top: 2px; }
+.sf-body .out { color: var(--cyan); font-size: 0.85em; margin-top: 4px; }
+.sf-conn { padding-left: 14px; color: var(--text-dim); font-size: 0.75em; }
+.trigger-group { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 1.2em 0; }
+.trigger-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px; text-align: center; }
+.trigger-card .sym { font-size: 1.4em; margin-bottom: 4px; }
+@media (max-width: 640px) { .trigger-group { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<h1>Context Compressor：分层上下文压缩</h1>
+<p class="meta">Lesson 007 · 阅读时间 7 分钟</p>
+
+<p>长会话是 Agent 框架最大的敌人之一——随着对话进行，上下文窗口被大量工具输出填满，关键信息被稀释，Agent 越来越「笨」。Context Compressor 就是为此设计的。</p>
+
+<h2>四阶段 pipeline</h2>
+
+<p>四个阶段<strong>逐级执行</strong>，后一阶段是前一阶段的兜底：</p>
+
+<div class="stage-flow">
+  <div class="sf-row">
+    <div class="sf-num">1</div>
+    <div class="sf-body">
+      <div class="name">SummaryPreview</div>
+      <div class="desc">将大工具输出压缩为结构化摘要，保留关键信息（数字、标识符、key-value）</div>
+      <div class="out">输出：截断文本 + 元数据摘要</div>
+    </div>
+  </div>
+  <div class="sf-conn">↓ 如果内容仍过大</div>
+  <div class="sf-row">
+    <div class="sf-num">2</div>
+    <div class="sf-body">
+      <div class="name">PlaceholderReplacement</div>
+      <div class="desc">将大内容替换为 <code>{{placeholder:uuid}}</code> 令牌，原文存入外部缓存</div>
+      <div class="out">输出：占位符令牌 → 缓存映射</div>
+    </div>
+  </div>
+  <div class="sf-conn">↓ 如果上下文需要</div>
+  <div class="sf-row">
+    <div class="sf-num">3</div>
+    <div class="sf-body">
+      <div class="name">OnDemandRetrieval</div>
+      <div class="desc">从占位符恢复完整内容——只在你真的需要看的时候才展开</div>
+      <div class="out">输出：原始内容（按需加载）</div>
+    </div>
+  </div>
+  <div class="sf-conn">↓ 如果上下文超限</div>
+  <div class="sf-row">
+    <div class="sf-num">4</div>
+    <div class="sf-body">
+      <div class="name">Fallback</div>
+      <div class="desc">当上下文超过硬限制时，裁剪到 N 条，优先保留含 error/fail/important 的关键项</div>
+      <div class="out">输出：裁剪后的上下文子集</div>
+    </div>
+  </div>
+</div>
+
+<h2>三种触发条件（OR）</h2>
+
+<div class="trigger-group">
+  <div class="trigger-card">
+    <div class="sym">🧠</div>
+    <div style="font-size:0.82em;">Agent 自省</div>
+    <div style="font-size:0.72em;color:var(--text-muted);">Agent 主动调用 signal_introspect()</div>
+  </div>
+  <div class="trigger-card">
+    <div class="sym">🔢</div>
+    <div style="font-size:0.82em;">轮数阈值</div>
+    <div style="font-size:0.72em;color:var(--text-muted);">达到预设对话轮数</div>
+  </div>
+  <div class="trigger-card">
+    <div class="sym">📊</div>
+    <div style="font-size:0.82em;">Token 阈值</div>
+    <div style="font-size:0.72em;color:var(--text-muted);">上下文使用率超过阈值</div>
+  </div>
+</div>
+
+<p>三者是 <strong>OR 关系</strong>——任意一个满足就触发压缩。触发后 <code>reset_metrics()</code> 清零计数器。</p>
+
+<h2>代码结构</h2>
+
+<pre><code>class CompressorPipeline:
+    def __init__(self, token_threshold=2000, turn_threshold=10):
+        self.stage1 = Stage1SummaryPreview()
+        self.stage2 = Stage2PlaceholderReplacement()
+        self.stage3 = Stage3OnDemandRetrieval()
+        self.stage4 = Stage4Fallback(max_items=50)
+
+    # 触发接口
+    def update_metrics(self, token_count, turn_count)    # 累积指标
+    def signal_introspect(self)                           # 自省信号
+    def should_trigger(self) -> bool                     # OR 检查
+    def reset_metrics(self)                              # 清零
+
+    # Pipeline 执行
+    def compress(self, content) -> str                   # Stage 1 → 2
+    def decompress(self, token) -> str | None            # Stage 3
+    def prune(self, items) -> list                       # Stage 4</code></pre>
+
+<h2>设计要点</h2>
+
+<h3>缓存友好</h3>
+<p>占位符 <code>{{placeholder:uuid}}</code> 只有几十个字符，在上下文中几乎不占空间。Claude Code 的 Prompt Cache 能更好地命中——因为绝大部分上下文在压缩后是稳定的、重复出现的占位符，而非每次都不同的大段文本。</p>
+
+<h3>逐级执行</h3>
+<p>不是每次压缩都跑满四阶段。大多数场景：</p>
+<ul>
+  <li><strong>Stage 1 就够了</strong>——输出不大，截断一下就能用</li>
+  <li><strong>Stage 2 是主力</strong>——大内容替换为占位符，使用时才展开</li>
+  <li><strong>Stage 3 是按需</strong>——只在需要查看详情时调用</li>
+  <li><strong>Stage 4 是最后防线</strong>——上下文真的快满了才裁剪</li>
+</ul>
+
+<h3>Stage 2 vs Stage 3</h3>
+<p>为什么要两个占位符机制？</p>
+<ul>
+  <li><strong>Stage 2</strong>：<code>{{placeholder:key}}</code> —— 用于明确的「内容替换」，框架内部自动管理</li>
+  <li><strong>Stage 3</strong>：<code>{{ph:key}}</code> —— 用于「on-demand 检索」，开发者可以主动请求恢复</li>
+</ul>
+<p>实际使用中 Stage 2 是主力，Stage 3 是扩展点。</p>
+
+<div class="key-insight">
+<p><strong>要记住的一句话</strong>：压缩不是丢信息，是给信息分层——热数据留在上下文里，温数据用占位符代替，冷数据存到记忆系统。需要时按层级恢复，而不是一股脑全塞进去。</p>
+</div>
+
+<hr>
+<p><strong>源码</strong>：<a href="../src/sigma/compressor.py">compressor.py</a></p>
+</body>
+</html>

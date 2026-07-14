@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 004 — Skill Executor：Tool 编排执行</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+.timeline { position: relative; padding-left: 32px; margin: 1.4em 0; }
+.timeline::before { content: ''; position: absolute; left: 10px; top: 0; bottom: 0; width: 2px; background: var(--border); }
+.tl-item { position: relative; margin-bottom: 20px; padding: 16px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+.tl-item::before { content: attr(data-step); position: absolute; left: -26px; top: 16px; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #000; font-family: var(--font-mono); font-size: 0.7em; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+.tl-item .fn { font-family: var(--font-mono); font-size: 0.85em; color: var(--cyan); }
+.tl-item .desc { font-size: 0.88em; color: var(--text-muted); margin-top: 4px; }
+.tl-item .arrow { color: var(--text-dim); }
+</style>
+</head>
+<body>
+
+<h1>Skill Executor：Tool 编排执行</h1>
+<p class="meta">Lesson 004 · 阅读时间 6 分钟 · <a href="../lessons/0003-stage1-recall.html">← Stage 1 召回</a></p>
+
+<p>Router 选出了最佳的 Skill 之后，下一步就是执行它。这就是 <strong>SkillExecutor</strong> 的职责。</p>
+
+<h2>Skill 是什么？</h2>
+
+<p>先回顾 Skill 的定义：</p>
+
+<pre><code>@dataclass
+class Skill:
+    id: str
+    name: str
+    description: str
+    metadata: dict          # tags, intent_class, applicability_boundary
+    examples: list[str]
+    tools: list[ToolRef]    # 这个 Skill 涉及哪些 Tool
+    pipeline: list[ExecutionStep]  # 执行步骤编排</code></pre>
+
+<p><strong>Skill = 多个 Tool 的编排序列</strong>，不是 Tool 的 wrapper。关键在 <code>pipeline</code> 字段——它定义了工具的执行顺序和参数传递。</p>
+
+<h2>执行逻辑</h2>
+
+<p>SkillExecutor.run() 的代码极其精简：</p>
+
+<pre><code>def run(self, skill: Skill) -> ExecutionResult:
+    outputs = []
+    for step in skill.pipeline:
+        tool = self._tools.get(step.tool)
+        if tool is None:                         # ← 工具不存在
+
+            return ExecutionResult(success=False, error=f"Tool '{step.tool}' not found")
+        result = tool.execute(step.params)       # ← 执行当前步骤
+        outputs.append(f"{step.tool}: {result.output}")
+        if not result.success:                   # ← 失败则跳过后续步骤
+            return ExecutionResult(success=False, outputs=outputs, error=result.error)
+    return ExecutionResult(success=True, outputs=outputs)</code></pre>
+
+<p>逐行拆解：</p>
+
+<div class="timeline">
+  <div class="tl-item" data-step="1">
+    <div class="fn">for step in skill.pipeline:</div>
+    <div class="desc">遍历 Skill 定义中的执行步骤序列</div>
+  </div>
+  <div class="tl-item" data-step="2">
+    <div class="fn">tool = self._tools.get(step.tool)</div>
+    <div class="desc">从已注册的工具字典中查找对应的 Tool 实例。如果找不到，立即返回错误。</div>
+  </div>
+  <div class="tl-item" data-step="3">
+    <div class="fn">result = tool.execute(step.params)</div>
+    <div class="desc">执行工具，传入该步骤的参数。每个 Tool 都实现同一个接口：<code>execute(params) → ToolResult</code></div>
+  </div>
+  <div class="tl-item" data-step="4">
+    <div class="fn">outputs.append(...)</div>
+    <div class="desc">记录执行输出，如 <code>"tool_a: result data"</code></div>
+  </div>
+  <div class="tl-item" data-step="5">
+    <div class="fn">if not result.success: return error</div>
+    <div class="desc">如果当前步骤失败，返回已完成的输出 + 错误信息，跳过后续所有步骤</div>
+  </div>
+</div>
+
+<h2>错误传播机制</h2>
+
+<p>看具体的失败场景：</p>
+
+<pre><code>pipeline = [
+    ExecutionStep(tool="build", params={"target": "prod"}),
+    ExecutionStep(tool="deploy", params={"env": "staging"}),
+    ExecutionStep(tool="notify", params={"channel": "slack"}),
+]</code></pre>
+
+<ul>
+  <li>如果 <strong>build 失败</strong> → 返回 <code>ExecutionResult(success=False, outputs=["build: ..."], error="build failed")</code> — deploy 和 notify 被跳过</li>
+  <li>如果 <strong>deploy 失败</strong> → <code>outputs=["build: ...", "deploy: ..."]</code>，notify 被跳过</li>
+  <li>如果 <strong>Tool 未注册</strong> → 立即返回错误，不会尝试执行</li>
+</ul>
+
+<blockquote>
+<strong>设计选择</strong>：为什么失败后跳过后续而不是重试？因为重试逻辑是 Orchestrator 的职责，SkillExecutor 只负责"按顺序执行一次"。这是关注点分离——如果每层都做重试，逻辑会混乱。
+</blockquote>
+
+<h2>Tool 接口</h2>
+
+<pre><code>class Tool:
+    """所有 Tool 的基类。只需要实现 execute() 即可接入框架。"""
+    def execute(self, params: dict[str, Any]) -> ToolResult:
+        raise NotImplementedError
+
+@dataclass
+class ToolResult:
+    success: bool
+    output: str = ""
+    error: str = ""</code></pre>
+
+<p>框架对 Tool 没有任何其他要求——可以是 shell 命令、API 调用、本地函数。测试中使用 MockTool 来验证行为：</p>
+
+<pre><code>class MockToolA(Tool):
+    def execute(self, params: dict) -> ToolResult:
+        return ToolResult(success=True, output=f"tool_a result: {params}")</code></pre>
+
+<h2>Skill 定义完整示例</h2>
+
+<p>一个"代码审查" Skill 的完整定义：</p>
+
+<pre><code>Skill(
+    id="code-review",
+    name="Code Review",
+    metadata={
+        "tags": ["code", "review", "quality"],
+        "intent_class": "code_review",
+    },
+    examples=["review this PR for bugs"],
+    tools=[ToolRef(name="check"), ToolRef(name="report")],
+    pipeline=[
+        ExecutionStep(tool="check", params={"mode": "quick"}),   # Step 1: 检查
+        ExecutionStep(tool="report", params={"format": "md"}),    # Step 2: 报告
+    ],
+)</code></pre>
+
+<p>执行时：<code>check(params={"mode": "quick"})</code> → <code>report(params={"format": "md"})</code>。</p>
+
+<h2>Skill Executor vs Orchestrator</h2>
+
+<table class="compare-table">
+  <tr><th>维度</th><th>SkillExecutor</th><th>Orchestrator</th></tr>
+  <tr><td>职责</td><td>执行单个 Skill 的 Tool 序列</td><td>分解任务、调度子 Agent 执行多个 Skill</td></tr>
+  <tr><td>粒度</td><td>单次执行</td><td>全生命周期管理</td></tr>
+  <tr><td>错误处理</td><td>失败即停，跳过后续</td><td>评估结果，决定重试或跳过</td></tr>
+  <tr><td>并行</td><td>串行（按 pipeline 顺序）</td><td>支持 Fork (CONCURRENT) 模式</td></tr>
+</table>
+
+<div class="key-insight">
+<p><strong>要记住的一句话</strong>：SkillExecutor 做的是"按剧本走一遍"——它不管剧本好不好（那是 Router 的事），也不管演砸了怎么办（那是 Orchestrator 的事）。只做一件事，做简单。</p>
+</div>
+
+<hr>
+<p><strong>源码</strong>：<a href="../src/sigma/executor.py">executor.py</a></p>
+</body>
+</html>

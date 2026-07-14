@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 008 — Orchestrator：中心化多 Agent 协作</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+.arch { display: flex; flex-direction: column; align-items: center; gap: 12px; margin: 1.6em 0; font-family: var(--font-mono); font-size: 0.85em; }
+.arch-box { background: var(--surface); border: 2px solid var(--border); border-radius: 10px; padding: 16px 32px; text-align: center; min-width: 200px; }
+.arch-box--main { border-color: var(--accent-dim); }
+.arch-box--sub { border-color: var(--border); }
+.arch .arrow { color: var(--text-dim); font-size: 1.2em; }
+.arch .row { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+
+.compact-table td { font-size: 0.85em; padding: 8px 12px; }
+.compact-table th { font-size: 0.75em; padding: 8px 12px; }
+</style>
+</head>
+<body>
+
+<h1>Orchestrator：中心化多 Agent 协作</h1>
+<p class="meta">Lesson 008 · 阅读时间 8 分钟 · <a href="../lessons/0004-skill-executor.html">← Skill Executor</a></p>
+
+<p>Orchestrator 是框架中最上层的模块——它负责把复杂任务分解、分配给 Worker、评估结果、汇总输出。</p>
+
+<h2>架构</h2>
+
+<div class="arch">
+  <div class="arch-box arch-box--main">
+    <strong>🧑‍💼 Orchestrator</strong><br>
+    <span style="font-size:0.8em;color:var(--text-muted);">计划 · 调度 · 评估 · 汇总</span>
+  </div>
+  <div class="arrow">↓ plan() 分解任务 ↓</div>
+  <div class="row">
+    <div class="arch-box arch-box--sub">
+      <strong>👷 Worker A</strong><br>
+      <span style="font-size:0.75em;color:var(--text-muted);">build → test</span>
+    </div>
+    <div class="arch-box arch-box--sub">
+      <strong>👷 Worker B</strong><br>
+      <span style="font-size:0.75em;color:var(--text-muted);">deploy → notify</span>
+    </div>
+  </div>
+  <div class="arrow">↑ evaluate() 评估结果 ↑</div>
+  <div class="arch-box arch-box--main">
+    <strong>📊 aggregate()</strong><br>
+    <span style="font-size:0.8em;color:var(--text-muted);">最终输出</span>
+  </div>
+</div>
+
+<h2>完整生命周期</h2>
+
+<pre><code>1. plan("Build, test, and deploy")
+   ↓ 识别关键动作，按依赖排序
+   subtasks = [
+     build (depends_on: []),
+     test  (depends_on: [build]),
+     deploy(depends_on: [test]),
+   ]
+
+2. execute_plan(plan, mode=SEQUENTIAL)
+   ↓ 按依赖拓扑依次或并行执行
+   for subtask in plan:
+     create Worker → execute → destroy Worker
+
+3. evaluate(result)
+   ↓ 判断是否接受
+   accepted = result.success
+
+4. aggregate(results)
+   ↓ 合并输出
+   "[build] compiled\n[test] 42 passed\n[deploy] deployed to staging"</code></pre>
+
+<h2>Worker 的生命周期</h2>
+
+<table class="compare-table compact-table">
+  <tr><th>阶段</th><th>行为</th></tr>
+  <tr><td><strong>创建</strong></td><td>Orchestrator 为每个 subtask 创建一个新的 Worker 实例，注入全量 Tool 和只读记忆句柄</td></tr>
+  <tr><td><strong>执行</strong></td><td>Worker 在 subtask 边界内自行规划执行顺序，调用所需 Tool</td></tr>
+  <tr><td><strong>销毁</strong></td><td>执行完成后 Worker 对象被丢弃，不维护任何状态</td></tr>
+</table>
+
+<p><strong>为什么用完就销毁？</strong></p>
+<ul>
+  <li><strong>防止状态泄漏</strong>——Worker 之间不共享状态，一个 Worker 的变量不会意外影响另一个 Worker</li>
+  <li><strong>简化心智模型</strong>——每个 Worker 只处理一个 subtask，不需要考虑"上次调用的上下文"</li>
+  <li><strong>与分布式兼容</strong>——无状态 Worker 可以轻松迁移到远程执行</li>
+</ul>
+
+<h2>三种执行模式</h2>
+
+<table class="compare-table">
+  <tr><th>模式</th><th>含义</th><th>适用场景</th></tr>
+  <tr>
+    <td><code>SEQUENTIAL</code></td>
+    <td>串行执行 subtask，按依赖拓扑排序<br>依赖不满足则标记为 skipped</td>
+    <td>有明确依赖链的任务（build → test → deploy）</td>
+  </tr>
+  <tr>
+    <td><code>CONCURRENT</code></td>
+    <td>并行执行无依赖的 subtask<br>按依赖分批提交到 ThreadPoolExecutor</td>
+    <td>多个独立子任务可同时进行</td>
+  </tr>
+  <tr>
+    <td><code>WORKTREE</code></td>
+    <td>每个 subtask 在独立临时目录中执行<br>执行完自动清理目录</td>
+    <td>子任务会产生文件/目录冲突的场景</td>
+  </tr>
+</table>
+
+<h3>依赖拓扑是如何被执行的？</h3>
+
+<pre><code>plan.subtasks = [
+  Subtask(id="build",  depends_on=[]),
+  Subtask(id="test",   depends_on=["build"]),
+  Subtask(id="deploy", depends_on=["test"]),
+  Subtask(id="notify", depends_on=[]),          # 可并行
+]
+
+SEQUENTIAL 模式下：
+  build (无依赖)       → 成功
+  test (依赖 build)    → build 成功了，可以执行
+  deploy (依赖 test)   → test 成功了，可以执行
+  notify (无依赖)      → 可以执行（与 deploy 并行无关）
+
+CONCURRENT 模式下：
+  第 1 批：build, notify  ← 两个都无依赖，同时提交
+  第 2 批：test           ← 等待 build 完成
+  第 3 批：deploy         ← 等待 test 完成</code></pre>
+
+<h3>依赖不满足时</h3>
+
+<pre><code>如果 build 失败，依赖链会传播：
+  build  → fail ❌
+  test   → skipped (依赖 build 失败)
+  deploy → skipped (依赖 test 未完成)
+
+最终的 aggregate() 输出：
+  [build] FAILED: build error
+  [test] SKIPPED: dependency failed (build)
+  [deploy] SKIPPED: dependency failed (test)
+  ---
+  3 subtask(s) failed</code></pre>
+
+<h2>设计决策：为什么中心化？</h2>
+
+<p>框架选择「主 Agent 统一规划审批」而非「Agent 间自由协商」，原因：</p>
+
+<ul>
+  <li><strong>避免协调基础设施</strong>——Agent 间通信、仲裁、共识这些基础设施往往比它解决的问题还复杂</li>
+  <li><strong>主 Agent 是瓶颈，但可接受</strong>——在框架层面，自然不会有上万个 Worker 并发执行；如果是几十个 Worker 级别，中心化完全够用</li>
+  <li><strong>关注点分离</strong>——Orchestrator 做决策（做什么），Worker 做执行（怎么做）</li>
+</ul>
+
+<blockquote>
+<strong>关键设计决策</strong>：子 Agent 之间<strong>没有直接通信</strong>。所有协调通过 Orchestrator 完成。这意味着一百个 Worker 之间不会出现死锁或消息风暴——但代价是 Orchestrator 成为单点瓶颈。对于框架层项目，这个折衷是合理的。
+</blockquote>
+
+<div class="key-insight">
+<p><strong>要记住的一句话</strong>：Orchestrator 做的不是「让 Agent 协作」，而是「不要让 Agent 因为协作而互相干扰」。Worker 是纯粹的「执行单元」，不需要知道其他 Worker 的存在。</p>
+</div>
+
+<hr>
+<p><strong>源码</strong>：<a href="../src/sigma/orchestrator.py">orchestrator.py</a></p>
+</body>
+</html>

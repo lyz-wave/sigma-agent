@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 005 — Memory System：三种记忆类型</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+.type-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 1.4em 0; }
+.type-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; }
+.type-card h3 { margin-top: 0; font-size: 1em; }
+.type-card p { font-size: 0.85em; }
+.type-card .emoji { font-size: 2em; margin-bottom: 8px; }
+.type-card .eg { font-family: var(--font-mono); font-size: 0.8em; color: var(--text-dim); margin-top: 8px; padding: 6px 10px; background: var(--bg); border-radius: 4px; }
+@media (max-width: 640px) { .type-grid { grid-template-columns: 1fr; } }
+.lifecycle { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; justify-content: center; margin: 1.6em 0; font-family: var(--font-mono); font-size: 0.82em; }
+.lc-node { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 6px 14px; }
+.lc-arrow { color: var(--text-dim); }
+.lc-node.hl { border-color: var(--accent-dim); color: var(--accent); }
+</style>
+</head>
+<body>
+
+<h1>Memory System：三种记忆类型</h1>
+<p class="meta">Lesson 005 · 阅读时间 7 分钟</p>
+
+<p>这是框架中最具「自进化」色彩的部分——Agent 不再每次从零开始，而是能把执行中获得的经验沉淀下来，跨会话复用。</p>
+
+<h2>三种记忆类型</h2>
+
+<div class="type-grid">
+  <div class="type-card">
+    <div class="emoji">📄</div>
+    <h3>FactualMemory</h3>
+    <p>静态事实知识：API 参数、配置值、环境信息。</p>
+    <p>来源：从执行输出中用正则提取 <code>key=value</code> 模式。</p>
+    <div class="eg">key="api_endpoint" → content="api_endpoint=staging.api.com"</div>
+  </div>
+  <div class="type-card">
+    <div class="emoji">📋</div>
+    <h3>ProceduralMemory</h3>
+    <p>程序性知识：How-to 步骤、成功模式。</p>
+    <p>来源：成功执行的输出步骤序列。</p>
+    <div class="eg">steps=["check: reviewed syntax", "report: generated output"]</div>
+  </div>
+  <div class="type-card">
+    <div class="emoji">💡</div>
+    <h3>EpisodicMemory</h3>
+    <p>情景记忆：失败事件 + 上下文环境。</p>
+    <p>来源：失败执行的错误信息 + 环境状态。</p>
+    <div class="eg">context={"error": "connection refused", "completed_steps": 1}</div>
+  </div>
+</div>
+
+<h2>生命周期</h2>
+
+<div class="lifecycle">
+  <span class="lc-node">执行</span>
+  <span class="lc-arrow">→</span>
+  <span class="lc-node hl">反思</span>
+  <span class="lc-arrow">→</span>
+  <span class="lc-node">提炼</span>
+  <span class="lc-arrow">→</span>
+  <span class="lc-node">分类存储</span>
+  <span class="lc-arrow">→</span>
+  <span class="lc-node">索引更新</span>
+  <span class="lc-arrow">→</span>
+  <span class="lc-node">按需复用</span>
+</div>
+
+<p>其中「反思」和「提炼」由 ReflectionEngine 负责（Lesson 006），「分类存储」「索引更新」「按需复用」由 StorageBackend 负责。</p>
+
+<h2>数据类定义</h2>
+
+<pre><code>@dataclass
+class MemoryRecord:
+    key: str              # 唯一标识，如 "proc_deploy_a1b2c3"
+    content: str          # 记忆的文本内容
+    tags: list[str]       # 检索标签
+    type: str             # "factual" / "procedural" / "episodic"
+
+@dataclass
+class FactualMemory(MemoryRecord):
+    source: str = ""      # 知识来源，如 "execution:deployment"
+
+@dataclass
+class ProceduralMemory(MemoryRecord):
+    domain: str = ""      # 所属领域，如 "deployment"
+    steps: list[str] = field(default_factory=list)  # 步骤列表
+
+@dataclass
+class EpisodicMemory(MemoryRecord):
+    context: dict = field(default_factory=dict)  # 上下文环境
+    outcome: str = ""     # "success" / "failure"</code></pre>
+
+<h2>存储层：可插拔设计</h2>
+
+<pre><code>class StorageBackend(ABC):
+    """任何存储后端只需实现这三个方法"""
+    @abstractmethod
+    def store(self, record: MemoryRecord) -> None: ...
+    @abstractmethod
+    def query(self, memory_type, tags, limit=100) -> list[MemoryRecord]: ...
+    @abstractmethod
+    def cross_reference(self, key) -> list[str]: ...</code></pre>
+
+<p>内置的 <code>SQLiteStorageBackend</code>：</p>
+<ul>
+  <li>使用 SQLite 表存储，列：<code>id, key, type, content, tags(JSON), extra_data(JSON)</code></li>
+  <li>维护内存中的 <code>tag → set[keys]</code> 索引，cross_reference 是 O(1) 而非 O(n)</li>
+  <li>跨会话持久化——数据写入了磁盘文件，下次启动仍在</li>
+</ul>
+
+<h2>跨会话复用的含义</h2>
+
+<p>在 SQLite 模式下：</p>
+
+<pre><code># Session 1：执行 deploy，反思沉淀记忆
+engine.reflect(exec_result, intent_class="deployment")
+
+# 程序退出，下次启动...
+# Session 2：查询记忆系统，发现上次的经验
+storage = SQLiteStorageBackend("sigma.db")
+past_memories = storage.query(memory_type="procedural", tags=["deployment"])
+# → 返回上次存储的部署步骤经验</code></pre>
+
+<p>这就是"自进化"的含义——<strong>不是代码自动修改自己，而是每次执行的经验被自动提炼为可查询的记忆资产，新会话可以按需加载</strong>。</p>
+
+<blockquote>
+
+<strong>澄清</strong>：「自进化」不是说 Agent 自己改代码，而是：执行 → 反思 → 提炼 → 复用，这个闭环在每次执行后自动运行，不需要人工干预。经验越积越多，Agent 的表现自然「进化」。
+</blockquote>
+
+<div class="key-insight">
+<p><strong>要记住的一句话</strong>：三种记忆类型对应了人类学习中的「知道什么」（事实）、「知道怎么做」（程序）、「记得那次翻车」（情景）。一套统一的接口管理三种不同类型的经验。</p>
+</div>
+
+<hr>
+<p><strong>源码</strong>：<a href="../src/sigma/memory.py">memory.py</a> · <a href="../src/sigma/storage.py">storage.py</a></p>
+</body>
+</html>

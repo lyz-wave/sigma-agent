@@ -1,0 +1,969 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sigma Agent — 分层路由与自进化记忆 Agent 框架</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&family=Syne:wght@600;700;800&display=swap" rel="stylesheet">
+<style>
+/* ── Reset & Base ── */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  background: #07070d;
+  color: #d4d2cc;
+  font-family: 'Outfit', sans-serif;
+  font-weight: 300;
+  font-size: 16px;
+  line-height: 1.7;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Variables ── */
+:root {
+  --bg-primary: #07070d;
+  --bg-surface: #0e0e18;
+  --bg-card: #141422;
+  --bg-card-hover: #1a1a2e;
+  --border: #1e1e34;
+  --amber: #d97706;
+  --amber-glow: rgba(217, 119, 6, 0.15);
+  --amber-dim: #92400e;
+  --cyan: #06b6d4;
+  --cyan-glow: rgba(6, 182, 212, 0.12);
+  --text-primary: #e8e4dc;
+  --text-secondary: #8a8894;
+  --text-dim: #52505e;
+  --grid-size: 48px;
+}
+
+/* ── Grid Background ── */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(217, 119, 6, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(217, 119, 6, 0.03) 1px, transparent 1px);
+  background-size: var(--grid-size) var(--grid-size);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ── Grain Overlay ── */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* ── Particles Canvas ── */
+#particles {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* ── Container ── */
+.container {
+  position: relative;
+  z-index: 2;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+/* ── Hero ── */
+.hero {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  position: relative;
+  padding: 80px 0 60px;
+}
+
+.hero__sigma {
+  font-family: 'Syne', sans-serif;
+  font-weight: 800;
+  font-size: clamp(72px, 15vw, 160px);
+  line-height: 0.85;
+  color: var(--text-primary);
+  letter-spacing: -0.04em;
+  opacity: 0;
+  animation: fadeUp 1s 0.1s ease both;
+  position: relative;
+}
+.hero__sigma::after {
+  content: '∑';
+  position: absolute;
+  left: 0;
+  top: 0;
+  font-size: 0.35em;
+  color: var(--amber);
+  opacity: 0.4;
+  transform: translate(-0.6em, 0.3em);
+}
+
+.hero__sigma span {
+  display: block;
+  background: linear-gradient(135deg, var(--amber) 0%, var(--cyan) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.hero__tagline {
+  font-family: 'Outfit', sans-serif;
+  font-weight: 300;
+  font-size: clamp(16px, 2.2vw, 24px);
+  color: var(--text-secondary);
+  max-width: 600px;
+  margin-top: 28px;
+  opacity: 0;
+  animation: fadeUp 1s 0.3s ease both;
+  line-height: 1.6;
+}
+
+.hero__meta {
+  display: flex;
+  gap: 36px;
+  margin-top: 48px;
+  flex-wrap: wrap;
+  opacity: 0;
+  animation: fadeUp 1s 0.5s ease both;
+}
+
+.hero__meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.hero__meta-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.hero__meta-value {
+  font-family: 'Syne', sans-serif;
+  font-weight: 700;
+  font-size: 28px;
+  color: var(--text-primary);
+}
+
+/* ── Sigma Emblem ── */
+.hero__emblem {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 320px;
+  height: 320px;
+  opacity: 0.06;
+  pointer-events: none;
+}
+.hero__emblem svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Scroll indicator ── */
+.scroll-indicator {
+  position: absolute;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  opacity: 0.3;
+  animation: pulse 2s ease-in-out infinite;
+}
+.scroll-indicator__line {
+  width: 1px;
+  height: 40px;
+  background: linear-gradient(var(--amber), transparent);
+}
+
+/* ── Section ── */
+.section {
+  padding: 100px 0;
+}
+
+.section__header {
+  margin-bottom: 64px;
+  opacity: 0;
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+.section__header.visible {
+  opacity: 1;
+}
+.section__label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--amber);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  margin-bottom: 12px;
+}
+.section__title {
+  font-family: 'Syne', sans-serif;
+  font-weight: 700;
+  font-size: clamp(32px, 4vw, 52px);
+  color: var(--text-primary);
+  line-height: 1.1;
+}
+.section__sub {
+  font-size: 17px;
+  color: var(--text-secondary);
+  max-width: 540px;
+  margin-top: 16px;
+  line-height: 1.7;
+}
+
+/* ── Pillars Grid ── */
+.pillars {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
+}
+
+.pillar-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 40px 36px;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.3s ease, transform 0.3s ease, box-shadow 0.3s ease;
+  opacity: 0;
+  transform: translateY(30px);
+}
+.pillar-card.visible {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.6s ease, transform 0.6s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+}
+.pillar-card:hover {
+  border-color: var(--amber-dim);
+  transform: translateY(-4px);
+  box-shadow: 0 12px 40px rgba(217, 119, 6, 0.06);
+}
+
+.pillar-card__glow {
+  position: absolute;
+  top: -50%;
+  right: -50%;
+  width: 100%;
+  height: 100%;
+  background: radial-gradient(circle at 80% 20%, var(--amber-glow), transparent 60%);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+.pillar-card:hover .pillar-card__glow {
+  opacity: 1;
+}
+
+.pillar-card__num {
+  font-family: 'Syne', sans-serif;
+  font-weight: 800;
+  font-size: 48px;
+  color: var(--amber);
+  opacity: 0.15;
+  position: absolute;
+  top: 12px;
+  right: 20px;
+  line-height: 1;
+}
+
+.pillar-card__icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  margin-bottom: 20px;
+}
+
+.pillar-card__title {
+  font-family: 'Syne', sans-serif;
+  font-weight: 600;
+  font-size: 20px;
+  color: var(--text-primary);
+  margin-bottom: 10px;
+}
+
+.pillar-card__desc {
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+}
+
+.pillar-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.pillar-card__tag {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  font-weight: 400;
+}
+
+/* ── Metrics ── */
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 20px;
+  margin: 60px 0;
+}
+
+.metric {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 28px 24px;
+  text-align: center;
+  opacity: 0;
+  transform: translateY(20px);
+}
+.metric.visible {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.5s ease, transform 0.5s ease;
+}
+
+.metric__value {
+  font-family: 'Syne', sans-serif;
+  font-weight: 700;
+  font-size: 36px;
+  background: linear-gradient(135deg, var(--amber), var(--cyan));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.metric__label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-top: 6px;
+}
+
+/* ── Terminal Section ── */
+.terminal {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  margin-top: 48px;
+}
+
+.terminal__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 20px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.terminal__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.terminal__dot--r { background: #ef4444; }
+.terminal__dot--y { background: #eab308; }
+.terminal__dot--g { background: #22c55e; }
+
+.terminal__title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-left: 12px;
+}
+
+.terminal__body {
+  padding: 24px 28px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  line-height: 1.9;
+  color: var(--text-secondary);
+  min-height: 160px;
+}
+
+.terminal__line {
+  opacity: 0;
+  animation: typeIn 0.4s ease forwards;
+}
+.terminal__line .prompt { color: var(--cyan); }
+.terminal__line .cmd { color: var(--text-primary); }
+.terminal__line .output { color: var(--text-secondary); }
+.terminal__line .highlight { color: var(--amber); }
+
+/* ── Architecture Flow ── */
+.flow-diagram {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 60px 0;
+  flex-wrap: wrap;
+}
+
+.flow-node {
+  flex: 1;
+  min-width: 120px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px 16px;
+  text-align: center;
+  position: relative;
+  opacity: 0;
+  transform: translateY(20px);
+  transition: border-color 0.3s ease, transform 0.3s ease;
+}
+.flow-node.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+.flow-node:hover {
+  border-color: var(--amber-dim);
+  transform: translateY(-4px);
+}
+
+.flow-node__icon {
+  font-size: 24px;
+  margin-bottom: 8px;
+}
+.flow-node__label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.flow-node__name {
+  font-family: 'Syne', sans-serif;
+  font-weight: 600;
+  font-size: 16px;
+  color: var(--text-primary);
+  margin-top: 4px;
+}
+
+.flow-arrow {
+  font-size: 20px;
+  color: var(--amber);
+  opacity: 0.3;
+  flex-shrink: 0;
+  animation: arrowPulse 1.5s ease-in-out infinite;
+}
+
+/* ── GitHub CTA ── */
+.cta {
+  text-align: center;
+  padding: 100px 0 80px;
+  opacity: 0;
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+.cta.visible { opacity: 1; }
+
+.cta__title {
+  font-family: 'Syne', sans-serif;
+  font-weight: 700;
+  font-size: clamp(28px, 3.5vw, 42px);
+  color: var(--text-primary);
+  margin-bottom: 16px;
+}
+
+.cta__desc {
+  color: var(--text-secondary);
+  font-size: 17px;
+  max-width: 480px;
+  margin: 0 auto 36px;
+  line-height: 1.7;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 36px;
+  border-radius: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: all 0.3s ease;
+  cursor: pointer;
+  border: none;
+}
+
+.btn--primary {
+  background: linear-gradient(135deg, var(--amber), #b45309);
+  color: #07070d;
+  box-shadow: 0 0 30px rgba(217, 119, 6, 0.15);
+}
+.btn--primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 40px rgba(217, 119, 6, 0.25);
+}
+
+.btn--outline {
+  background: transparent;
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+}
+.btn--outline:hover {
+  border-color: var(--amber-dim);
+  background: var(--bg-card-hover);
+}
+
+.cta__buttons {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+/* ── Footer ── */
+.footer {
+  border-top: 1px solid var(--border);
+  padding: 32px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-dim);
+  position: relative;
+  z-index: 2;
+}
+
+/* ── Animations ── */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(24px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.6; }
+}
+
+@keyframes typeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes arrowPulse {
+  0%, 100% { opacity: 0.2; transform: translateX(0); }
+  50% { opacity: 0.6; transform: translateX(4px); }
+}
+
+/* ── Command List ── */
+.command-list {
+  list-style: none;
+  margin-top: 40px;
+}
+.command-list li {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  opacity: 0;
+  transform: translateX(-10px);
+  transition: opacity 0.4s ease, transform 0.4s ease;
+}
+.command-list li.visible {
+  opacity: 1;
+  transform: translateX(0);
+}
+.command-list .cmd {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 500;
+  font-size: 14px;
+  color: var(--amber);
+  min-width: 140px;
+}
+.command-list .desc {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+.command-list .arrow {
+  color: var(--text-dim);
+}
+
+/* ── Responsive ── */
+@media (max-width: 900px) {
+  .pillars { grid-template-columns: 1fr; }
+  .metrics { grid-template-columns: repeat(2, 1fr); }
+  .flow-diagram { flex-direction: column; }
+  .flow-arrow { transform: rotate(90deg); }
+  .hero__emblem { display: none; }
+}
+
+@media (max-width: 480px) {
+  .metrics { grid-template-columns: 1fr; }
+  .hero__meta { gap: 20px; }
+  .cta__buttons { flex-direction: column; align-items: center; }
+}
+</style>
+</head>
+<body>
+
+<!-- Particles -->
+<canvas id="particles"></canvas>
+
+<!-- Hero -->
+<section class="hero">
+  <div class="container">
+    <div class="hero__sigma">
+      <span>Sigma</span>
+      Agent
+    </div>
+    <p class="hero__tagline">
+      分层路由与自进化记忆 Agent 框架<br>
+      Hierarchical Skill Routing · Self-Evolving Memory · Multi-Agent Orchestration
+    </p>
+    <div class="hero__meta">
+      <div class="hero__meta-item">
+        <span class="hero__meta-label">Modules</span>
+        <span class="hero__meta-value">06</span>
+      </div>
+      <div class="hero__meta-item">
+        <span class="hero__meta-label">Tests</span>
+        <span class="hero__meta-value">84</span>
+      </div>
+      <div class="hero__meta-item">
+        <span class="hero__meta-label">Language</span>
+        <span class="hero__meta-value">Python&nbsp;3.10+</span>
+      </div>
+      <div class="hero__meta-item">
+        <span class="hero__meta-label">License</span>
+        <span class="hero__meta-value">Open&nbsp;Source</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="hero__emblem">
+    <svg viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M100 10 L190 100 L100 190 L10 100 Z" stroke="currentColor" stroke-width="1"/>
+      <path d="M100 30 L170 100 L100 170 L30 100 Z" stroke="currentColor" stroke-width="0.5" opacity="0.5"/>
+      <circle cx="100" cy="100" r="50" stroke="currentColor" stroke-width="0.5" opacity="0.3"/>
+      <text x="100" y="110" text-anchor="middle" dominant-baseline="middle" font-size="48" font-weight="bold" fill="currentColor">∑</text>
+    </svg>
+  </div>
+
+  <div class="scroll-indicator">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+      <path d="M8 3v10M4 9l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <div class="scroll-indicator__line"></div>
+  </div>
+</section>
+
+<!-- Metrics -->
+<div class="container">
+  <div class="metrics" id="metrics">
+    <div class="metric"><div class="metric__value">6</div><div class="metric__label">Core Modules</div></div>
+    <div class="metric"><div class="metric__value">84</div><div class="metric__label">Tests Passing</div></div>
+    <div class="metric"><div class="metric__value">4</div><div class="metric__label">Architecture Pillars</div></div>
+    <div class="metric"><div class="metric__value">0</div><div class="metric__label">Dependencies</div></div>
+  </div>
+</div>
+
+<!-- Architecture Flow -->
+<section class="section" id="architecture">
+  <div class="container">
+    <div class="section__header">
+      <div class="section__label">Architecture</div>
+      <h2 class="section__title">Query Loop · Tool Use</h2>
+      <p class="section__sub">中心化多 Agent 协作：主 Agent 统一规划审批，子 Agent 以 Tool Call 方式受控执行</p>
+    </div>
+
+    <div class="flow-diagram" id="flow">
+      <div class="flow-node"><div class="flow-node__icon">🎯</div><div class="flow-node__label">Step 1</div><div class="flow-node__name">Intent</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node"><div class="flow-node__icon">🔍</div><div class="flow-node__label">Step 2</div><div class="flow-node__name">Router</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node"><div class="flow-node__icon">⚡</div><div class="flow-node__label">Step 3</div><div class="flow-node__name">Skill</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node"><div class="flow-node__icon">🧠</div><div class="flow-node__label">Step 4</div><div class="flow-node__name">Reflect</div></div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node"><div class="flow-node__icon">⏳</div><div class="flow-node__label">Step 5</div><div class="flow-node__name">Memorize</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- 4 Pillars -->
+<section class="section" id="pillars">
+  <div class="container">
+    <div class="section__header">
+      <div class="section__label">Core Innovation</div>
+      <h2 class="section__title">四大技术支柱</h2>
+      <p class="section__sub">从路由到记忆，从上下文到协作 — 四个维度构建完整的 Agent 执行闭环</p>
+    </div>
+
+    <div class="pillars" id="pillarGrid">
+      <div class="pillar-card" style="transition-delay: 0.05s">
+        <div class="pillar-card__glow"></div>
+        <div class="pillar-card__num">01</div>
+        <div class="pillar-card__icon">🧭</div>
+        <div class="pillar-card__title">Skill 分层路由</div>
+        <div class="pillar-card__desc">
+          原子 Tool → 高层 Skill → Skill 目录三层结构。两阶段召回（意图+标签）与精排（打分函数），解决 Tool 数量增长后的检索噪声与功能重叠。
+        </div>
+        <div class="pillar-card__tags">
+          <span class="pillar-card__tag">Stage 1 Recall</span>
+          <span class="pillar-card__tag">Stage 2 Scoring</span>
+          <span class="pillar-card__tag">No LLM at Rank</span>
+        </div>
+      </div>
+
+      <div class="pillar-card" style="transition-delay: 0.15s">
+        <div class="pillar-card__glow"></div>
+        <div class="pillar-card__num">02</div>
+        <div class="pillar-card__icon">🧠</div>
+        <div class="pillar-card__title">自进化记忆沉淀</div>
+        <div class="pillar-card__desc">
+          执行 → 反思 → 提炼 → 分类存储 → 索引更新 → 按需复用。成功经验与失败归因双路径沉淀，三种记忆类型（事实/程序性/情景）自动分类。
+        </div>
+        <div class="pillar-card__tags">
+          <span class="pillar-card__tag">Factual</span>
+          <span class="pillar-card__tag">Procedural</span>
+          <span class="pillar-card__tag">Episodic</span>
+        </div>
+      </div>
+
+      <div class="pillar-card" style="transition-delay: 0.25s">
+        <div class="pillar-card__glow"></div>
+        <div class="pillar-card__num">03</div>
+        <div class="pillar-card__icon">📦</div>
+        <div class="pillar-card__title">分层上下文压缩</div>
+        <div class="pillar-card__desc">
+          摘要预览 → 占位替换 → 按需检索 → 超限兜底，四阶段逐级执行。三种 OR 触发条件（自省/轮数/Token）。缓存友好，降低 60%+ Token 成本。
+        </div>
+        <div class="pillar-card__tags">
+          <span class="pillar-card__tag">Summary Preview</span>
+          <span class="pillar-card__tag">Placeholder</span>
+          <span class="pillar-card__tag">Prompt Cache</span>
+        </div>
+      </div>
+
+      <div class="pillar-card" style="transition-delay: 0.35s">
+        <div class="pillar-card__glow"></div>
+        <div class="pillar-card__num">04</div>
+        <div class="pillar-card__icon">🤝</div>
+        <div class="pillar-card__title">中心化多 Agent 协作</div>
+        <div class="pillar-card__desc">
+          主 Agent 统一规划审批，子 Agent 以 Tool Call 方式受控执行。Fork（进程内并行）与 Worktree（隔离工作区）双模式，避免复杂协调基础设施。
+        </div>
+        <div class="pillar-card__tags">
+          <span class="pillar-card__tag">Orchestrator</span>
+          <span class="pillar-card__tag">Worker</span>
+          <span class="pillar-card__tag">Fork/Worktree</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Terminal -->
+<section class="section" id="cli">
+  <div class="container">
+    <div class="section__header">
+      <div class="section__label">Skill Commands</div>
+      <h2 class="section__title">Slash Commands</h2>
+      <p class="section__sub">注册 Skill → 路由匹配 → 执行编排 → 反思沉淀，一条命令完成完整闭环</p>
+    </div>
+
+    <div class="terminal">
+      <div class="terminal__bar">
+        <div class="terminal__dot terminal__dot--r"></div>
+        <div class="terminal__dot terminal__dot--y"></div>
+        <div class="terminal__dot terminal__dot--g"></div>
+        <span class="terminal__title">sigma-agent — interactive</span>
+      </div>
+      <div class="terminal__body" id="terminalBody">
+        <div class="terminal__line"><span class="prompt">$ </span><span class="cmd">sigma.route --intent code_review --tags python,quality</span></div>
+        <div class="terminal__line"><span class="output">→ matched: code-review (score 0.87)</span></div>
+        <div class="terminal__line"><br></div>
+        <div class="terminal__line"><span class="prompt">$ </span><span class="cmd">sigma.execute code-review</span></div>
+        <div class="terminal__line"><span class="output">→ tool:check → tool:report → done</span></div>
+        <div class="terminal__line"><span class="output">→ memory: <span class="highlight">procedural</span> stored (key=proc_code_review_a1b2c3)</span></div>
+        <div class="terminal__line"><br></div>
+        <div class="terminal__line"><span class="prompt">$ </span><span class="cmd">sigma.plan "build, test, and deploy"</span></div>
+        <div class="terminal__line"><span class="output">→ 3 subtasks: build → test → deploy</span></div>
+        <div class="terminal__line"><span class="output">→ mode: <span class="highlight">sequential</span> (worktree=on)</span></div>
+        <div class="terminal__line"><span class="output">→ all 3/3 subtasks passed ✓</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="cta" id="cta">
+  <div class="container">
+    <h2 class="cta__title">开源 · 共建</h2>
+    <p class="cta__desc">
+      Sigma Agent 是完全开源的 AI Coding Agent 框架。
+      欢迎贡献代码、提交 Issue、或加入讨论。
+    </p>
+    <div class="cta__buttons">
+      <a href="https://github.com/lyz-wave/sigma-agent" class="btn btn--primary" target="_blank">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        View on GitHub
+      </a>
+      <a href="https://github.com/lyz-wave/sigma-agent/issues" class="btn btn--outline" target="_blank">
+        Report Issues →
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer class="footer">
+  <div class="container">
+    Sigma Agent — Apache 2.0 Licensed · Built with Python · Powered by Claude Code
+  </div>
+</footer>
+
+<script>
+// ── Particles ──
+const canvas = document.getElementById('particles');
+const ctx = canvas.getContext('2d');
+let particles = [];
+let animId;
+
+function resizeCanvas() {
+  canvas.width = window.innerWidth;
+  canvas.height = document.documentElement.scrollHeight;
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+
+class Particle {
+  constructor() { this.reset(); }
+  reset() {
+    this.x = Math.random() * canvas.width;
+    this.y = Math.random() * canvas.height;
+    this.size = Math.random() * 1.5 + 0.5;
+    this.speedX = (Math.random() - 0.5) * 0.3;
+    this.speedY = (Math.random() - 0.5) * 0.3;
+    this.opacity = Math.random() * 0.5 + 0.1;
+  }
+  update() {
+    this.x += this.speedX;
+    this.y += this.speedY;
+    if (this.x < 0 || this.x > canvas.width || this.y < 0 || this.y > canvas.height) this.reset();
+  }
+  draw() {
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(217, 119, 6, ${this.opacity})`;
+    ctx.fill();
+  }
+}
+
+for (let i = 0; i < 80; i++) particles.push(new Particle());
+
+function drawConnections() {
+  for (let i = 0; i < particles.length; i++) {
+    for (let j = i + 1; j < particles.length; j++) {
+      const dx = particles[i].x - particles[j].x;
+      const dy = particles[i].y - particles[j].y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < 150) {
+        ctx.beginPath();
+        ctx.moveTo(particles[i].x, particles[i].y);
+        ctx.lineTo(particles[j].x, particles[j].y);
+        ctx.strokeStyle = `rgba(217, 119, 6, ${0.06 * (1 - dist / 150)})`;
+        ctx.lineWidth = 0.5;
+        ctx.stroke();
+      }
+    }
+  }
+}
+
+function animateParticles() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  particles.forEach(p => { p.update(); p.draw(); });
+  drawConnections();
+  animId = requestAnimationFrame(animateParticles);
+}
+requestAnimationFrame(animateParticles);
+
+// ── Scroll Reveal ──
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.classList.add('visible');
+    }
+  });
+}, { threshold: 0.1 });
+
+document.querySelectorAll('.metric, .pillar-card, .flow-node, .command-list li, .section__header, .cta').forEach(el => observer.observe(el));
+
+// ── Metrics Counter ──
+function animateCounter(el, target, duration = 1500) {
+  const start = performance.now();
+  function tick(now) {
+    const elapsed = now - start;
+    const progress = Math.min(elapsed / duration, 1);
+    const eased = 1 - Math.pow(1 - progress, 3);
+    el.textContent = Math.floor(eased * target);
+    if (progress < 1) requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+
+const metricObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      const valueEl = entry.target.querySelector('.metric__value');
+      const target = parseInt(valueEl.textContent);
+      animateCounter(valueEl, target);
+      metricObserver.unobserve(entry.target);
+    }
+  });
+}, { threshold: 0.5 });
+document.querySelectorAll('.metric').forEach(el => metricObserver.observe(el));
+
+// ── Terminal typewriter ──
+(function typeTerminal() {
+  const body = document.getElementById('terminalBody');
+  const lines = body.querySelectorAll('.terminal__line');
+  lines.forEach((line, i) => {
+    line.style.animationDelay = `${i * 0.15}s`;
+  });
+})();
+</script>
+</body>
+</html>

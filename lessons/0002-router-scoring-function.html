@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lesson 002 — Router 精排打分函数</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+.formula {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 28px 32px;
+  margin: 1.4em 0;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 1.3em;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+.formula .hl { color: var(--accent); }
+.formula .cyan { color: var(--cyan); }
+.formula .dim { color: var(--text-dim); font-size: 0.7em; }
+
+.dimension-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 16px;
+  margin: 1.6em 0;
+}
+.dim-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+  text-align: center;
+}
+.dim-card__value {
+  font-family: var(--font-mono);
+  font-size: 2em;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.dim-card__label { font-size: 0.85em; color: var(--text-muted); }
+.dim-card__desc { font-size: 0.82em; color: var(--text-muted); margin-top: 8px; line-height: 1.5; }
+.dim-card--intent .dim-card__value { color: var(--accent); }
+.dim-card--tag .dim-card__value { color: var(--cyan); }
+.dim-card--example .dim-card__value { color: #a78bfa; }
+
+.compare-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  margin: 1.4em 0;
+}
+.compare-table th, .compare-table td {
+  padding: 12px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9em;
+}
+.compare-table th {
+  font-family: var(--font-mono);
+  font-size: 0.82em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: var(--surface);
+}
+.compare-table tr:last-child td { border-bottom: none; }
+.compare-table .winner { background: rgba(217, 119, 6, 0.06); }
+
+.calc-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px 24px;
+  margin: 1.2em 0;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  line-height: 2;
+}
+.calc-box .step { color: var(--text-muted); }
+
+.key-insight {
+  background: rgba(6, 182, 212, 0.06);
+  border-left: 3px solid var(--cyan);
+  padding: 16px 20px;
+  margin: 1.2em 0;
+  border-radius: 0 8px 8px 0;
+}
+.key-insight p { margin: 0; font-size: 0.92em; }
+
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 1.2em 0; }
+@media (max-width: 640px) { .dimension-grid, .two-col { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<h1>Router 精排打分函数</h1>
+<p class="meta">Lesson 002 · 阅读时间 8 分钟 · <a href="../lessons/0001-sigma-agent-overview.html">← Lesson 001</a></p>
+
+<p>上一课说了框架的全貌。这一课深入最微妙的一个设计——<strong>Stage 2 精排的打分函数</strong>。</p>
+
+<p>为什么要单独讲这个？因为它是整个项目设计哲学的缩影：<strong>在正确的环节用正确的手段</strong>。路由需要精度，但不是所有精度都需要 LLM。</p>
+
+<h2>核心公式</h2>
+
+<p>打分函数是一个加权线性组合，三个维度各自贡献一部分分数：</p>
+
+<div class="formula">
+<span class="hl">score</span> =
+  <span class="hl">w<sub>i</sub></span> · <span class="hl">s<sub>i</sub></span> +
+  <span class="hl cyan">w<sub>t</sub></span> · <span class="hl cyan">s<sub>t</sub></span> +
+  <span class="dim">w<sub>e</sub></span> · <span class="dim">s<sub>e</sub></span>
+</div>
+
+<div class="dimension-grid">
+  <div class="dim-card dim-card--intent">
+    <div class="dim-card__value">0.5</div>
+    <div class="dim-card__label">意图权重</div>
+    <div class="dim-card__desc">意图精确匹配则满分，否则 0<br>这是主导维度</div>
+  </div>
+  <div class="dim-card dim-card--tag">
+    <div class="dim-card__value">0.3</div>
+    <div class="dim-card__label">标签权重</div>
+    <div class="dim-card__desc">查询标签中有多大比例命中了 Skill 的标签集</div>
+  </div>
+  <div class="dim-card dim-card--example">
+    <div class="dim-card__value">0.2</div>
+    <div class="dim-card__label">示例权重</div>
+    <div class="dim-card__desc">用户查询文本与 Skill 示例的关键词重叠度</div>
+  </div>
+</div>
+
+<p>三个权重的和为 <code>1.0</code>，保证输出在 <code>[0, 1]</code> 区间内。</p>
+
+<h2>为什么不用 LLM 做精排？</h2>
+
+<p>这是本项目最重要的设计决策之一。如果你让 LLM 来做 Stage 2 的最终选择：</p>
+
+<table class="compare-table">
+  <tr><th>维度</th><th>打分函数</th><th>LLM 精排</th></tr>
+  <tr>
+    <td>Token 成本</td>
+    <td><strong style="color: var(--accent);">零</strong> — 纯数学运算</td>
+    <td>每次路由消耗 N 个 Skill × 若干 Token</td>
+  </tr>
+  <tr>
+    <td>延迟</td>
+    <td><strong style="color: var(--accent);">微秒级</strong></td>
+    <td>百毫秒到秒级</td>
+  </tr>
+  <tr>
+    <td>确定性</td>
+    <td><strong style="color: var(--accent);">确定</strong> — 相同输入始终相同输出</td>
+    <td>随机性 — 同样的输入可能选不同 Skill</td>
+  </tr>
+  <tr>
+    <td>路由本身引入的噪声</td>
+    <td><strong style="color: var(--accent);">无</strong></td>
+    <td>LLM 的选择偏差可能抵消路由的收益</td>
+  </tr>
+</table>
+
+<div class="key-insight">
+<p><strong>设计哲学</strong>：如果路由本身也需要 LLM 来决策，那路由带来的 Token 节省就完全被它自己消耗掉了。打分函数的存在是为了<em>避免</em>在路由过程中调用 LLM，而不是作为 LLM 的补充。</p>
+</div>
+
+<h2>逐项拆解</h2>
+
+<h3>1. 意图匹配分（权重 0.5）</h3>
+
+<p>最直接的维度。用户查询被分类为一个 <code>intent_class</code>，Skill 注册时也声明了自己的 <code>intent_class</code>。</p>
+
+<div class="calc-box">
+<span class="step"># 精确匹配 → 满分</span><br>
+intent_score = 1.0  &nbsp;（当 candidate.intent_matched == True）<br><br>
+<span class="step"># 不匹配 → 零分</span><br>
+intent_score = 0.0  &nbsp;（否则）
+</div>
+
+<p>这是硬约束：<strong>如果意图都不匹配，这一项就是 0</strong>。但因为权重 0.5，标签和示例仍有总计 0.5 的权重，所以其他维度可能"救"回来——这是有意为之，用于处理模糊查询。</p>
+
+<h3>2. 标签重叠分（权重 0.3）</h3>
+
+<p>用户查询中提取的标签，有多大比例命中了 Skill 的标签列表。</p>
+
+<div class="calc-box">
+<span class="step"># 例子：查询标签 ["python", "quality", "deploy"]</span><br>
+skill_tags = ["code", "review", "quality", "python"]<br>
+matched_tags = ["python", "quality"]<br><br>
+tag_score = 2/3 ≈ <strong>0.667</strong>
+</div>
+
+<h3>3. 示例相似度（权重 0.2）</h3>
+
+<p>将用户的原始查询文本与 Skill 注册时提供的 <code>examples</code> 列表做关键词重叠。</p>
+
+<div class="calc-box">
+<span class="step"># 用户查询："review this PR for bugs"</span><br>
+query_words = {"review", "this", "pr", "for", "bugs"}<br>
+→ 去掉短词后: {"review", "this", "pr", "bugs"}<br><br>
+<span class="step"># Skill 示例："review this PR for bugs", "check code style"</span><br>
+example_words = {"review", "this", "pr", "for", "bugs", "check", "code", "style"}<br><br>
+common = {"review", "this", "pr", "bugs"}<br><br>
+example_score = 4/4 = <strong>1.0</strong>
+</div>
+
+<h2>完整计算示例</h2>
+
+<p>假设我们有三个 Skill 注册在 Catalog 中：</p>
+
+<table class="compare-table">
+  <tr><th>Skill</th><th>intent_class</th><th>tags</th><th>examples</th></tr>
+  <tr><td>code-review</td><td><code>code_review</code></td><td>["code","review","quality","python"]</td><td>"review this PR for bugs"</td></tr>
+  <tr><td>test-runner</td><td><code>testing</code></td><td>["test","python","quality"]</td><td>"run all tests"</td></tr>
+  <tr><td>deploy</td><td><code>deployment</code></td><td>["deploy","devops","infra"]</td><td>"deploy to production"</td></tr>
+</table>
+
+<p>现在用户的查询是 <strong>"review the test quality"</strong>，提取为 <code>intent_class=""</code>（不确定）、<code>tags=["review", "test", "quality"]</code>：</p>
+
+<div class="calc-box">
+<span class="step">Stage 1 召回：</span><br>
+  code-review ← 命中 tags: "review", "quality"<br>
+  test-runner ← 命中 tags: "test", "quality"<br>
+  deploy     ← 零匹配 — 排除<br><br>
+<span class="step">Stage 2 评分：</span><br><br>
+  <strong>code-review</strong><br>
+  intent_score = 0.0  (intent_class 为空，无意图匹配)<br>
+  tag_score = 2/3 = 0.667<br>
+  example_score: query="review the test quality" vs "review this PR for bugs"<br>
+  → common={"review"} → 1/4 = 0.25<br>
+  <strong>→ 总分 = 0.5×0 + 0.3×0.667 + 0.2×0.25 = 0.25</strong><br><br>
+  <strong>test-runner</strong><br>
+  intent_score = 0.0<br>
+  tag_score = 2/3 = 0.667<br>
+  example_score: "review the test quality" vs "run all tests"<br>
+  → common={"test"} → 1/4 = 0.25<br>
+  <strong>→ 总分 = 0.5×0 + 0.3×0.667 + 0.2×0.25 = 0.25</strong>
+</div>
+
+<p>平局！当规则不够区分时——这就是为什么 Stage 2 之后还有 Orchestrator 做最终决策。</p>
+
+<h2>可配置性</h2>
+
+<p>权重不是写死的。构造 Router 时可以自定义：</p>
+
+<pre><code># 如果你更依赖标签匹配而非意图（比如意图分类不够准）
+router = Router(
+    registry,
+    intent_weight=0.3,
+    tag_weight=0.5,
+    example_weight=0.2,
+)
+
+# 或者完全去掉示例相似度
+router = Router(
+    registry,
+    intent_weight=0.6,
+    tag_weight=0.4,
+    example_weight=0.0,
+)</code></pre>
+
+<h2>验证：没有 LLM 调用</h2>
+
+<p>框架中有一个测试专门验证精排阶段没有 LLM 调用：</p>
+
+<pre><code>def test_no_llm_at_rank_time(self, router):
+    import inspect
+    source = inspect.getsource(router._score)
+    assert "openai" not in source.lower()
+    assert "anthropic" not in source.lower()
+    assert ".chat" not in source.lower()</code></pre>
+
+<p>它检查的是源代码中是否包含常见 LLM 库的关键词——如果未来有人不小心在打分函数里加了 LLM 调用，这个测试会失败。</p>
+
+<h2>总结</h2>
+
+<div class="key-insight">
+<p><strong>要记住的一句话</strong>：打分函数不是"穷人的 LLM"，而是有意为之的设计选择——路由的决策需要快速、确定、低成本，这些恰好是 LLM 不擅长的。</p>
+</div>
+
+<p>这也引出了一个更通用的问题框架：<strong>在你的系统里，哪个环节必须用 LLM，哪个环节用规则/数学就够用了？</strong> 这个区分往往是好的架构和差的设计之间的分水岭。</p>
+
+<hr style="border: none; border-top: 1px solid var(--border); margin: 3em 0;">
+
+<p><strong>参考资源</strong>：</p>
+<ul>
+  <li><a href="../src/sigma/router.py">router.py</a> — 完整实现</li>
+  <li><a href="../src/sigma/registry.py">registry.py</a> — Stage 1 召回逻辑</li>
+  <li><a href="../tests/test_router_executor.py">test_router_executor.py</a> — 路由测试（含 <code>test_no_llm_at_rank_time</code>）</li>
+  <li><a href="../lessons/0001-sigma-agent-overview.html">Lesson 001</a> — 项目整体架构</li>
+</ul>
+
+<p>有任何不清楚的随时问！</p>
+
+</body>
+</html>

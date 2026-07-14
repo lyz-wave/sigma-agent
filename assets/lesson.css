@@ -1,0 +1,77 @@
+/* Shared lesson styles — Tufte-inspired, dark theme */
+:root {
+  --bg: #0f0f17;
+  --surface: #191926;
+  --border: #252538;
+  --text: #e4e0d8;
+  --text-muted: #8a8894;
+  --accent: #d97706;
+  --accent-dim: #92400e;
+  --cyan: #06b6d4;
+  --font-body: 'Outfit', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-weight: 300;
+  line-height: 1.7;
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 48px 24px 120px;
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3 { font-weight: 600; line-height: 1.2; margin-top: 1.8em; margin-bottom: 0.4em; }
+h1 { font-size: 2.4em; letter-spacing: -0.02em; }
+h2 { font-size: 1.5em; color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
+h3 { font-size: 1.15em; }
+p, li { font-size: 1em; color: var(--text-muted); }
+a { color: var(--cyan); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, pre {
+  font-family: var(--font-mono);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.88em;
+}
+code { padding: 2px 6px; }
+pre { padding: 16px 20px; overflow-x: auto; line-height: 1.5; }
+pre code { background: none; border: none; padding: 0; }
+blockquote {
+  border-left: 3px solid var(--accent);
+  padding: 8px 20px;
+  margin: 1.2em 0;
+  background: rgba(217, 119, 6, 0.04);
+  border-radius: 0 8px 8px 0;
+}
+blockquote p { margin: 0; }
+.meta { color: var(--text-muted); font-size: 0.85em; margin-bottom: 2em; }
+.tag {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.75em;
+  padding: 2px 10px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  margin-right: 4px;
+}
+.diagram {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  margin: 1.4em 0;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  line-height: 2;
+}
+.diagram .arrow { color: var(--accent); opacity: 0.5; }
+.diagram .hl { color: var(--accent); font-weight: 500; }
+.diagram .hl-cyan { color: var(--cyan); }
+.qa { background: var(--surface); border-radius: 10px; padding: 20px 24px; margin: 1.4em 0; }
+.qa strong { color: var(--accent); }
