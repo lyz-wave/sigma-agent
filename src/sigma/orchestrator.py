@@ -3,6 +3,7 @@ from enum import Enum
 from typing import Any
 
 from sigma.executor import ExecutionResult, Tool, ToolResult
+from sigma.storage import StorageBackend
 
 
 # --- Core Data Types ---
@@ -43,6 +44,7 @@ class Evaluation:
 class ForkMode(Enum):
     SEQUENTIAL = "sequential"
     CONCURRENT = "concurrent"
+    WORKTREE = "worktree"
 
 
 # --- Worker (sub-Agent) ---
@@ -51,13 +53,22 @@ class Worker:
     """Worker Agent that executes subtasks with full Tool access.
 
     Lifecycle: create → execute → destroy. No state persists between subtasks.
-    Memory access: read-only (not currently implemented; the Worker receives
-    a memory_handle for future read-only memory system integration).
+    Memory access: read-only via the storage backend (query only).
     """
 
-    def __init__(self, agent_id: str, tools: dict[str, Tool]):
+    def __init__(
+        self,
+        agent_id: str,
+        tools: dict[str, Tool],
+        storage: StorageBackend | None = None,
+    ):
         self._agent_id = agent_id
         self._tools = tools
+        self._storage = storage
+
+    def memory(self) -> StorageBackend | None:
+        """Return the read-only memory handle for this Worker."""
+        return self._storage
 
     def execute(self, subtask: Subtask) -> WorkerResult:
         """Self-plan and execute a subtask within its boundary.
@@ -111,10 +122,15 @@ class Orchestrator:
     Worker Agents are created per-subtask (destroy-on-completion lifecycle).
     """
 
-    def __init__(self, tools: dict[str, Tool] | None = None):
+    def __init__(
+        self,
+        tools: dict[str, Tool] | None = None,
+        storage: StorageBackend | None = None,
+    ):
         self._tools: dict[str, Tool] = {}
         if tools:
             self._tools.update(tools)
+        self._storage = storage
 
     def plan(self, task_description: str) -> Plan:
         """Decompose a task description into ordered subtasks.
@@ -163,14 +179,19 @@ class Orchestrator:
 
     def dispatch(self, subtask: Subtask, mode: ForkMode = ForkMode.SEQUENTIAL) -> WorkerResult:
         """Dispatch a subtask to a new Worker instance."""
-        worker = Worker(agent_id=f"worker_{subtask.id}", tools=self._tools)
+        worker = Worker(
+            agent_id=f"worker_{subtask.id}",
+            tools=self._tools,
+            storage=self._storage,
+        )
         return worker.execute(subtask)
-        # Worker goes out of scope → destroyed (destroy-on-completion lifecycle)
 
     def execute_plan(self, plan: Plan, mode: ForkMode = ForkMode.SEQUENTIAL) -> list[WorkerResult]:
         """Execute all subtasks in a plan according to the specified mode."""
         if mode == ForkMode.CONCURRENT:
             return self._execute_concurrent(plan)
+        if mode == ForkMode.WORKTREE:
+            return self._execute_worktree(plan)
         return self._execute_sequential(plan)
 
     def _are_dependencies_satisfied(
@@ -250,6 +271,42 @@ class Orchestrator:
                     del pending[s_id]
 
         return list(results.values())
+
+    def _execute_worktree(self, plan: Plan) -> list[WorkerResult]:
+        """Execute subtasks in isolated temporary directories (worktree mode).
+
+        Each subtask gets a temporary working directory to avoid file
+        system conflicts between concurrent workers. Directory is cleaned
+        up after execution (destroy-on-completion).
+        """
+        import tempfile
+        results: list[WorkerResult] = []
+        completed: dict[str, WorkerResult] = {}
+        for subtask in plan.subtasks:
+            if not self._are_dependencies_satisfied(subtask, completed):
+                result = WorkerResult(
+                    subtask_id=subtask.id,
+                    success=False,
+                    error=f"Skipped: dependency not satisfied ({', '.join(subtask.depends_on)})",
+                )
+                results.append(result)
+                completed[subtask.id] = result
+                continue
+            work_dir = tempfile.mkdtemp(prefix=f"worktree_{subtask.id}_")
+            try:
+                worker = Worker(
+                    agent_id=f"worker_{subtask.id}",
+                    tools=self._tools,
+                    storage=self._storage,
+                )
+                subtask.params["work_dir"] = work_dir
+                result = worker.execute(subtask)
+                results.append(result)
+                completed[subtask.id] = result
+            finally:
+                import shutil
+                shutil.rmtree(work_dir, ignore_errors=True)
+        return results
 
     def evaluate(self, result: WorkerResult) -> Evaluation:
         """Evaluate a Worker's result — accept or request rework."""

@@ -64,15 +64,42 @@ def _row_to_record(row: sqlite3.Row) -> MemoryRecord:
 
 
 class SQLiteStorageBackend(StorageBackend):
-    """SQLite-backed memory storage with pluggable interface."""
+    """SQLite-backed memory storage with pluggable interface.
+
+    Maintains an in-memory tag→keys index for O(1) cross-references
+    instead of O(n) full-scan lookups.
+    """
 
     def __init__(self, db_path: str | Path):
         self._conn = sqlite3.connect(str(db_path))
         self._conn.row_factory = sqlite3.Row
+        # tag → set[memory_key] — maintained incrementally for O(1) cross_reference
+        self._tag_index: dict[str, set[str]] = {}
         self._init_schema()
+        self._rebuild_index()
 
     def close(self) -> None:
         self._conn.close()
+
+    def _rebuild_index(self) -> None:
+        """Rebuild the in-memory tag index from the database."""
+        self._tag_index.clear()
+        cursor = self._conn.execute("SELECT key, tags FROM memories")
+        for row in cursor.fetchall():
+            key = row["key"]
+            tags = json.loads(row["tags"])
+            for t in tags:
+                self._tag_index.setdefault(t, set()).add(key)
+
+    def _update_index(self, record: MemoryRecord) -> None:
+        """Update tag index when a memory record is stored."""
+        key = record.key
+        # Remove old tag entries for this key
+        for tag_set in self._tag_index.values():
+            tag_set.discard(key)
+        # Add new tag entries
+        for t in record.tags:
+            self._tag_index.setdefault(t, set()).add(key)
 
     def _init_schema(self) -> None:
         self._conn.execute("""
@@ -98,6 +125,7 @@ class SQLiteStorageBackend(StorageBackend):
             row,
         )
         self._conn.commit()
+        self._update_index(record)
 
     def query(
         self, memory_type: str, tags: list[str], limit: int = 100
@@ -114,7 +142,10 @@ class SQLiteStorageBackend(StorageBackend):
         return results[:limit]
 
     def cross_reference(self, key: str) -> list[str]:
-        """Find memory keys related to the given key via tag overlap."""
+        """Find memory keys related to the given key via tag overlap.
+
+        Uses the in-memory tag index for O(1) lookup per tag.
+        """
         cursor = self._conn.execute(
             "SELECT tags FROM memories WHERE key = ?", (key,)
         )
@@ -124,12 +155,8 @@ class SQLiteStorageBackend(StorageBackend):
         tags = json.loads(row["tags"])
         if not tags:
             return []
-        cursor = self._conn.execute(
-            "SELECT key, tags FROM memories WHERE key != ?", (key,)
-        )
-        related = []
-        for r in cursor.fetchall():
-            other_tags = json.loads(r["tags"])
-            if any(t in other_tags for t in tags):
-                related.append(r["key"])
-        return related
+        related: set[str] = set()
+        for t in tags:
+            related.update(self._tag_index.get(t, set()))
+        related.discard(key)
+        return list(related)
